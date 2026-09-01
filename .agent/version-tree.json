@@ -1,0 +1,303 @@
+{
+  "schema_version": 1,
+  "root": "v0_hessian_repair",
+  "nodes": {
+    "v0_hessian_repair": {
+      "parent": null,
+      "children": [
+        "v1_qk_spectral_basis",
+        "v1_softmax_aware_qk",
+        "v1_output_aware_linear"
+      ],
+      "focus": "combined",
+      "hypothesis": "完整 Hessian、互逆缩放和误差修复构成当前可运行起点",
+      "status": "baseline",
+      "metrics": {
+        "linear_mse": 0.002533227,
+        "attention_mse": 0.0003321124,
+        "score": 5.983274
+      }
+    },
+    "v1_qk_spectral_basis": {
+      "parent": "v0_hessian_repair",
+      "children": [
+        "v2_block_local_rotation",
+        "v2_proxy_optimized_rotation"
+      ],
+      "focus": "attention",
+      "algorithm_family": "orthogonal_qk_basis",
+      "implementation_base": "parent",
+      "hypothesis": "构建 Q/K 公共正交谱基底，在保持浮点点积不变的同时重排 HiF4 分块能量",
+      "status": "rejected",
+      "metrics": {
+        "linear_mse": 0.0025332271610921716,
+        "attention_mse": 0.0004843614230538581,
+        "score": 4.868103401373618
+      },
+      "task_id": "d9b4b9ad1374",
+      "solution_sha256": "1b2a337490326109f6afd92c89c491dfba2cf23f7a1212e68d2f014c36d58815",
+      "evaluation_run": "d9b4b9ad1374-1788181004"
+    },
+    "v1_softmax_aware_qk": {
+      "parent": "v0_hessian_repair",
+      "children": [
+        "v2_value_aware_fisher",
+        "v2_joint_qk_pairing"
+      ],
+      "focus": "attention",
+      "algorithm_family": "softmax_aware_qk",
+      "implementation_base": "parent",
+      "hypothesis": "利用 softmax 平移不变性与校准输出误差设计 Q/K 量化策略",
+      "status": "promising",
+      "metrics": {
+        "linear_mse": 0.0025332271610921716,
+        "attention_mse": 0.0003291976436547344,
+        "score": 6.009126046871927
+      },
+      "task_id": "14c3f99f3684",
+      "solution_sha256": "1a5d576b2a2c74e8826e747596adb4ae1ab1b8ec0d69f84a029ff494ee9bb2b8",
+      "evaluation_run": "14c3f99f3684-1788181004"
+    },
+    "v1_output_aware_linear": {
+      "parent": "v0_hessian_repair",
+      "children": [
+        "v2_crossblock_output_fit",
+        "v2_alternating_joint_fit"
+      ],
+      "focus": "linear",
+      "algorithm_family": "output_aware_linear",
+      "implementation_base": "parent",
+      "hypothesis": "使用校准矩阵的输出误差设计 Linear 量化与误差修复策略",
+      "status": "rejected",
+      "metrics": {
+        "linear_mse": 0.0025520262821371064,
+        "attention_mse": 0.0003321123805816656,
+        "score": 5.965549782471559
+      },
+      "task_id": "edf4b80960a8",
+      "solution_sha256": "a667974f224af982278a9ca1b6550ff84e02cdcc0143f2974080905e876fe098",
+      "evaluation_run": "edf4b80960a8-1788181004"
+    },
+    "v2_value_aware_fisher": {
+      "parent": "v1_softmax_aware_qk",
+      "children": [
+        "v3_joint_qk_output_metric",
+        "v3_low_rank_token_coupling"
+      ],
+      "focus": "attention",
+      "algorithm_family": "value_aware_softmax_fisher",
+      "implementation_base": "parent",
+      "hypothesis": "将 V 的协方差或输出方向纳入 softmax Jacobian，可使 Q/K 代理从概率误差进一步贴近最终 attention 输出 MSE。",
+      "status": "rejected",
+      "metrics": {
+        "linear_mse": 0.0025332271610921716,
+        "attention_mse": 0.00047303040721091277,
+        "score": 4.539616515452819
+      },
+      "task_id": "512ec8953fe4",
+      "solution_sha256": "a1d811d775ac433547d01fb9058a41ccf0911ab0a4251e2438c6f994c553e8ed",
+      "evaluation_run": "512ec8953fe4-1788181512"
+    },
+    "v2_joint_qk_pairing": {
+      "parent": "v1_softmax_aware_qk",
+      "children": [
+        "v3_joint_qkv_output",
+        "v3_joint_qk_scale_pairing"
+      ],
+      "focus": "attention",
+      "algorithm_family": "joint_qk_residual_selection",
+      "implementation_base": "parent",
+      "hypothesis": "联合评估配对 Q/K 候选的校准输出误差，可建模当前独立修复忽略的 Q/K 同时量化交叉项。",
+      "status": "rejected",
+      "metrics": {
+        "linear_mse": 0.0025332271610921716,
+        "attention_mse": 0.0003291976436547344,
+        "score": 6.009126046871927
+      },
+      "task_id": "fc184e2229fe",
+      "solution_sha256": "041fcf1119e1960fe7e23b835cc1bf82b05b8a929e47809e90ca20b47b3c8d41",
+      "evaluation_run": "fc184e2229fe-1788181512"
+    },
+    "v3_joint_qkv_output": {
+      "parent": "v2_joint_qk_pairing",
+      "children": [],
+      "focus": "attention",
+      "algorithm_family": "joint_qkv_output_selection",
+      "implementation_base": "parent",
+      "hypothesis": "Jointly selecting Q/K repair and V quantization candidates against the complete attention output may capture interactions omitted when V remains outside candidate selection.",
+      "status": "failed",
+      "metrics": null,
+      "task_id": "0aeb808189ef",
+      "failure": "structural review rejected: 项目证据错误：policy.md 第 7、56 行称父版本 Linear MSE 为 0.01934638856817037、Attention MSE 为 0.001527646392583847；但 solution/v2_joint_qk_pairing/report.md 第 38–40、48–54 行记录的正式结果分别为 0.0025332271610921716 和 0.0003291976436547344。; 可证伪指标因此失效：以 Attention MSE < 0.001527646392583847 作为成功条件，可能把明显劣于真实父版本 0.0003291976436547344 的结果误判为提升。需修正父版本证据及对应否证阈值。"
+    },
+    "v3_joint_qk_scale_pairing": {
+      "parent": "v2_joint_qk_pairing",
+      "children": [],
+      "focus": "attention",
+      "algorithm_family": "joint_qk_scale_pair_selection",
+      "implementation_base": "parent",
+      "hypothesis": "Joint selection among structurally distinct Q/K scale and LV2/LV3 encodings may expose useful paired candidates beyond the parent-versus-Hessian-repair set.",
+      "status": "failed",
+      "metrics": null,
+      "task_id": "cb1e69f8b477",
+      "failure": "implementation agent did not complete"
+    },
+    "v2_crossblock_output_fit": {
+      "parent": "v1_output_aware_linear",
+      "children": [
+        "v3_discrete_output_repair",
+        "v3_overlap_consensus",
+        "v3_global_lowrank_metric"
+      ],
+      "focus": "linear",
+      "algorithm_family": "crossblock_output_aware_linear",
+      "implementation_base": "parent",
+      "hypothesis": "联合相邻 HiF4 块求解等效权重可恢复当前块对角模型忽略的跨块输出抵消。",
+      "status": "rejected",
+      "metrics": {
+        "linear_mse": 0.002554140167602174,
+        "attention_mse": 0.0003321123805816656,
+        "score": 5.938902230760779
+      },
+      "task_id": "0455ba2bb47b",
+      "solution_sha256": "473d5df6ad17730ea864ac177ffd94717a6ce8031c6d09bd901c4a8d512c5150",
+      "evaluation_run": "0455ba2bb47b-1788183669"
+    },
+    "v2_alternating_joint_fit": {
+      "parent": "v1_output_aware_linear",
+      "children": [
+        "v3_quantized_weight_coordinate_fit",
+        "v3_crosschannel_activation_metric",
+        "v3_downstream_attention_coupled_fit"
+      ],
+      "focus": "combined",
+      "algorithm_family": "alternating_weight_activation_output_fit",
+      "implementation_base": "parent",
+      "hypothesis": "交替更新激活层级 scale 选择与输出感知权重，可降低一次性固定激活编码造成的模型失配。",
+      "status": "promising",
+      "metrics": {
+        "linear_mse": 0.0024909474165506766,
+        "attention_mse": 0.0003321123805816656,
+        "score": 6.00237023237718
+      },
+      "task_id": "fd4f334db0ab",
+      "solution_sha256": "00bdf50bc0c69a79e86f86e1d49c5c72f5d1567bdd038f30abdc92dcfde1f99f",
+      "evaluation_run": "fd4f334db0ab-1788183669"
+    },
+    "v2_block_local_rotation": {
+      "parent": "v1_qk_spectral_basis",
+      "children": [],
+      "focus": "attention",
+      "algorithm_family": "block_local_rotation_permutation",
+      "implementation_base": "parent",
+      "hypothesis": "A block-local orthogonal rotation followed by covariance-aware channel permutation may retain most decorrelation benefits while reducing online cost and explicitly balancing energy across HiF4 64/8/4 hierarchy boundaries.",
+      "status": "failed",
+      "metrics": null,
+      "task_id": "310b69b68fbf",
+      "failure": "structural review rejected: 实现对应关系缺失：policy 和任务假设声称降低完整 head 旋转的在线稠密成本，但代码仍将基保存为 `(head_dim, head_dim)` 稠密张量，并在 `_attention_dynamic` 中通过稠密 `torch.einsum` 执行。未实现稀疏/分块旋转路径，因此当前在线复杂度并未随每列仅 8 个非零元素而降低。; 可证伪指标缺失：上述在线成本主张没有对应的延迟、运算量或峰值资源目标及明确否证阈值；核心闭环仅检查 Attention MSE、总分和笼统的“资源超限”。; 实现对应关系不完整：版本假设要求显式平衡 HiF4 的 64/8/4 层级边界，但排列器只维护 `load8` 和 `load4`，没有 64 通道层级的负载目标、动作或消融验证。若仅拟研究 8/4 边界，应同步收窄版本假设；否则需实现并闭环验证 64 层级平衡。; 其余门禁项通过：核心变化属于结构级局部正交旋转与协方差感知排列；NVFP4 仍按连续 16 个 E2M1 值乘输入 E4M3 scale；名义父版本、实现基础、单一配置、六个公开接口、事实/推导/假设分类及论文直达引用均已提供。"
+    },
+    "v2_proxy_optimized_rotation": {
+      "parent": "v1_qk_spectral_basis",
+      "children": [],
+      "focus": "attention",
+      "algorithm_family": "quantization_objective_rotation",
+      "implementation_base": "parent",
+      "hypothesis": "Optimizing a shared orthogonal basis against a differentiable HiF4/logit-error proxy may outperform covariance eigenvectors, which only diagonalize second moments.",
+      "status": "failed",
+      "metrics": null,
+      "task_id": "910dd433851c",
+      "failure": "structural review rejected: 实现对应关系缺失：policy 声称代理“按 64/8/2/4 边界估计动态范围”并与 HiF4 层级对齐，但 `solution.py::_ste_e2m1_proxy` 只按 64 值块取单一 scale 后投影到 E2M1 levels，未实现 8/2/4 的 LV2/LV3 层级选择。核心算法动作与 policy 描述不一致。; 固定边界未被严格锁定：`solution.py::dequantize_nvfp4` 接受可变 `blk_size`，只检查最后一维能否被该参数整除，并未要求 `blk_size == 16`；调用者可传入其他分组大小，违反“每 16 个连续值共享一个 scale”的固定语义。; 证据标注不充分：policy 将代理描述为“与 HiF4 64/8/2/4 层级对齐”，但现有代码仅支持 64 值顶层边界，因而该描述既不是已验证事实，也没有实现证据支撑。其余结构性旋转优化、父版本与实现基础、六个公开接口、单一内部配置及可证伪指标均已说明；不因分数未知而拒绝。"
+    },
+    "v3_joint_qk_output_metric": {
+      "parent": "v2_value_aware_fisher",
+      "children": [],
+      "focus": "attention",
+      "algorithm_family": "joint_qk_output_gauss_newton",
+      "implementation_base": "parent",
+      "hypothesis": "Jointly selecting paired Q/K repairs under the value-aware output metric may capture cross terms omitted by independent Q and K decisions.",
+      "status": "failed",
+      "metrics": null,
+      "task_id": "5d2c5a02b847",
+      "failure": "structural review rejected: 实现对应关系缺失：`hif4_calibration_attention` 的成功路径（solution.py:1507-1537）没有调用 `_joint_qk_repair_masks`，返回的 Q/K state 也没有 `joint_repair_head_mask`。因此动态门控（solution.py:1643-1649）不会执行，policy 所述“联合 Q/K 输出损失选择”实际未接入核心路径。; 实现位置错误且会导致异常：联合搜索被放入 `_attention_fallback_state`（solution.py:1147-1156），但该函数没有 `calib_qkv_list` 参数，引用该名称会触发 `NameError`；任何进入 fallback 的校准路径都可能直接失败。; 算法动作即使在当前错误位置被调用也无有效候选：fallback 构造的 Q/K state 没有 `cross_hessian`、`cross_inverse` 和 `hessian_head_dim`，所以 `_attention_hessian_repair` 会立即返回 parent；四种联合组合完全相同，无法实现可证伪的联合选择。; policy 的父版本、实现基础、NVFP4 固定语义、单一内部配置、理论来源、事实/推导/假设区分及指标—否证条件总体齐全；拒绝原因不是分数未知，而是核心结构策略与实现不对应并破坏 fallback 接口。"
+    },
+    "v3_low_rank_token_coupling": {
+      "parent": "v2_value_aware_fisher",
+      "children": [],
+      "focus": "attention",
+      "algorithm_family": "low_rank_token_fisher_repair",
+      "implementation_base": "parent",
+      "hypothesis": "Retaining a compact low-rank approximation of cross-token K curvature may improve output-MSE fidelity beyond the current token-diagonal approximation.",
+      "status": "draft",
+      "metrics": null,
+      "task_id": "befcb5dfba94"
+    },
+    "v3_quantized_weight_coordinate_fit": {
+      "parent": "v2_alternating_joint_fit",
+      "children": [],
+      "focus": "linear",
+      "algorithm_family": "quantized_weight_in_loop_joint_fit",
+      "implementation_base": "parent",
+      "hypothesis": "交替过程中以实际 HiF4 反量化权重而非连续最小二乘权重计算激活敏感度，可减少连续解被后续权重量化抵消的失配。",
+      "status": "draft",
+      "metrics": null,
+      "task_id": "4daff81155aa"
+    },
+    "v3_crosschannel_activation_metric": {
+      "parent": "v2_alternating_joint_fit",
+      "children": [],
+      "focus": "linear",
+      "algorithm_family": "full_output_metric_activation_search",
+      "implementation_base": "parent",
+      "hypothesis": "使用 U^T U 的块内非对角项联合评价激活候选，可捕获当前列能量对角近似忽略的跨通道误差抵消。",
+      "status": "failed",
+      "metrics": null,
+      "task_id": "f57896796147",
+      "failure": "structural review rejected: 实现对应关系不一致：policy 第 47 行承诺 activation metric 缺失、shape 不符或非有限时整次回退父版本 `_quantize_sensitive`；但 `hif4_dynamic_quantize_activation` 在 `_linear_state_valid` 失败时实际返回 `_quantize_hif4_v1`。需使实现与所述否证/安全闭环一致，或准确修订 policy。; 其余门禁项通过：核心为 64×64 块内 `U^T U` 非对角二次型候选选择；NVFP4 16 值分组语义未改；父版本、实现基础、配置数量、证据分类、可证伪指标及引用支撑均完整；与父版本的代码差异仅涉及 Linear metric state 和动态候选选择。"
+    },
+    "v3_downstream_attention_coupled_fit": {
+      "parent": "v2_alternating_joint_fit",
+      "children": [],
+      "focus": "combined",
+      "algorithm_family": "joint_linear_attention_calibration",
+      "implementation_base": "scratch",
+      "hypothesis": "若 Linear 输出直接进入 Q/K/V，使用下游注意力输出误差联合选择 Linear 激活编码和权重，可优于只最小化局部 Linear 输出误差。",
+      "status": "draft",
+      "metrics": null,
+      "task_id": "940d354e60db"
+    },
+    "v3_discrete_output_repair": {
+      "parent": "v2_crossblock_output_fit",
+      "children": [],
+      "focus": "linear",
+      "algorithm_family": "discrete_output_coordinate_repair",
+      "implementation_base": "parent",
+      "hypothesis": "直接在合法 HiF4 离散码空间最小化校准输出残差，可避免连续联合最小二乘收益被后续再量化抵消。",
+      "status": "draft",
+      "metrics": null,
+      "task_id": "6344cbbef76f"
+    },
+    "v3_overlap_consensus": {
+      "parent": "v2_crossblock_output_fit",
+      "children": [],
+      "focus": "linear",
+      "algorithm_family": "overlap_consensus_output_fit",
+      "implementation_base": "parent",
+      "hypothesis": "重叠相邻窗口并对共享块施加一致性约束，可恢复非重叠 128 维窗口边界处被删除的输出抵消。",
+      "status": "draft",
+      "metrics": null,
+      "task_id": "3438840dba77"
+    },
+    "v3_global_lowrank_metric": {
+      "parent": "v2_crossblock_output_fit",
+      "children": [],
+      "focus": "linear",
+      "algorithm_family": "global_lowrank_output_metric",
+      "implementation_base": "parent",
+      "hypothesis": "用全通道对角加低秩激活协方差近似，可在有限 CPU 成本下捕获超过两个块距离的主导相关方向。",
+      "status": "failed",
+      "metrics": null,
+      "task_id": "b3fa0940f90d",
+      "failure": "structural review rejected: 实现对应关系不一致：policy 的资源闭环明确声称“输出行按块拟合”，并据此论证有限 CPU 内存；但 solution.py::_output_aware_linear_target 实际一次性构造全部输出行的 target_outputs = transformed_weight @ x.T，并一次性计算 fitted，没有输出行分块。该实现引入 O(out_features × calibration_rows) 临时内存，policy 的复杂度说明也遗漏了这一项。需修正实现或 policy，并为实际内存边界给出可证伪指标。其余核心门禁满足：对角加低秩全通道误差模型属于结构性改动，NVFP4 的 16 值分组及输入 scale 语义未变，父版本/实现基础/理论来源/单一内部配置和假设分类均已说明。"
+    }
+  }
+}

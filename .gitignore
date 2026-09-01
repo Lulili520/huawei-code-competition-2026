@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.agent/runtime/
+
+# Keep local experiment branches; publish only the current best solution.
+solution/*
+!solution/v1_softmax_aware_qk/
+!solution/v1_softmax_aware_qk/**
+solution/v1_softmax_aware_qk/__pycache__/
+
+# The official archive is tracked; keep its large extracted copy local.
+reference/本地调试参考-0818/
