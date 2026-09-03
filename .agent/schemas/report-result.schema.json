@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "report_path",
+    "hypothesis_outcomes",
+    "takeaways",
+    "principle_updates"
+  ],
+  "properties": {
+    "status": {"type": "string", "enum": ["written", "failed"]},
+    "report_path": {"type": "string"},
+    "hypothesis_outcomes": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["hypothesis", "status", "evidence"],
+        "properties": {
+          "hypothesis": {"type": "string"},
+          "status": {
+            "type": "string",
+            "enum": ["结果支持", "结果否证", "证据不足"]
+          },
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "takeaways": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "statement", "evidence"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["positive", "negative", "boundary"]
+          },
+          "statement": {"type": "string"},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "principle_updates": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["principle_id", "action", "statement", "evidence"],
+        "properties": {
+          "principle_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$"
+          },
+          "action": {
+            "type": "string",
+            "enum": ["add", "reinforce", "challenge"]
+          },
+          "statement": {"type": "string"},
+          "evidence": {"type": "string"}
+        }
+      }
+    }
+  }
+}

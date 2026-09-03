@@ -1,0 +1,80 @@
+{
+  "schema_version": 2,
+  "versioning": "flat-sequential",
+  "baseline_scheme": "multi-v0-method-catalog",
+  "score_weights": {"linear": 1.0, "attention": 5.0},
+  "evaluation_profile": {
+    "dataset": "datasets/combined",
+    "linear_cases": 50,
+    "attention_cases": 250,
+    "score_unit": "percentage_points"
+  },
+  "screening_profile": {
+    "purpose": "internal_config_promotion_only",
+    "selection": "deterministic_evenly_spaced_groups",
+    "linear_cases": 10,
+    "attention_cases": 50,
+    "promote_top_k": 2,
+    "register_score": false
+  },
+  "versions": {
+    "v0_hessian_repair": {
+      "number": 0,
+      "method": "hessian_repair",
+      "based_on": null,
+      "status": "baseline",
+      "metrics": {
+        "linear_mse": 0.005876365662724178,
+        "attention_mse": 0.0003786237067026048,
+        "score": 16383.511407092246,
+        "seconds": 514.8921692995355,
+        "linear_case_count": 50,
+        "attention_case_count": 250,
+        "dataset": "datasets/combined"
+      }
+    },
+    "v0_softmax_aware_qk": {
+      "number": 0,
+      "method": "softmax_aware_qk",
+      "based_on": "v0_hessian_repair",
+      "status": "best",
+      "metrics": {
+        "linear_mse": 0.005876365662724178,
+        "attention_mse": 0.0003740420031498385,
+        "score": 16498.457890098867,
+        "seconds": 626.4658948006108,
+        "linear_case_count": 50,
+        "attention_case_count": 250,
+        "dataset": "datasets/combined"
+      },
+      "historical_metrics": {
+        "profile": "official-mini-5-linear-5-attention",
+        "linear_mse": 0.0025332271610921716,
+        "attention_mse": 0.0003291976436547344,
+        "raw_ratio_sum": 4.925249423296513
+      }
+    },
+    "v0_alternating_joint_fit": {
+      "number": 0,
+      "method": "alternating_joint_fit",
+      "based_on": "v0_hessian_repair",
+      "historical_source": "removed:v3_output_aware_linear",
+      "status": "linear_best",
+      "metrics": {
+        "linear_mse": 0.005690795642146364,
+        "attention_mse": 0.0003786237067026048,
+        "score": 16407.289265704094,
+        "seconds": 685.7268339004368,
+        "linear_case_count": 50,
+        "attention_case_count": 250,
+        "dataset": "datasets/combined"
+      },
+      "historical_metrics": {
+        "profile": "official-mini-5-linear-5-attention",
+        "linear_mse": 0.0024909474165506766,
+        "attention_mse": 0.0003321123805816656,
+        "raw_ratio_sum": 4.888527474350488
+      }
+    }
+  }
+}
