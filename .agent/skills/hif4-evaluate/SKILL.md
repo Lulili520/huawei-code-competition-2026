@@ -12,14 +12,16 @@ Use this skill's maintained script at `.agent/skills/hif4-evaluate/scripts/evalu
 From the repository root, run:
 
 ```powershell
-conda run -n huawei_competition_2026 python .agent/skills/hif4-evaluate/scripts/evaluate.py solution/v0_hessian_repair/solution.py solution/<candidate>/solution.py --datasets-dir datasets/combined
+D:\Miniconda3\envs\huawei_competition_2026\python.exe .agent/skills/hif4-evaluate/scripts/evaluate.py solution/v0_hessian_repair/solution.py solution/<candidate>/solution.py --datasets-dir datasets/combined
 ```
 
 For local-agent orchestration, request machine-readable evidence:
 
 ```powershell
-conda run -n huawei_competition_2026 python .agent/skills/hif4-evaluate/scripts/evaluate.py solution/<candidate>/solution.py --datasets-dir datasets/combined --json-output .agent/runtime/runs/<run>/evaluation.json
+D:\Miniconda3\envs\huawei_competition_2026\python.exe .agent/skills/hif4-evaluate/scripts/evaluate.py solution/<candidate>/solution.py --datasets-dir datasets/combined --json-output .agent/runtime/runs/<run>/evaluation.json
 ```
+
+Runner invokes this absolute environment Python directly after checking its `--version`; formal evaluation must not use `conda run`, whose wrapper can fail independently of the algorithm.
 
 The evaluator first runs the official `self_check.py` on its compact 10-case
 suite to validate interfaces and shapes. A single-config manual invocation then
@@ -54,6 +56,8 @@ compatibility source; it is not the current ranking dataset.
 
 Only `.agent/runner.py` may run and register formal local-agent evaluations. Worker Agents may prepare at most three configurations but must not write formal metrics themselves.
 
+After a successful full stage, Runner writes an evaluation summary and checkpoint before invoking the report Agent. If report generation or registration later fails, `recover` reuses that checkpoint and does not repeat the expensive full evaluation. A screening-only result is never a valid checkpoint for version registration.
+
 The JSON output also records per-case standard/player MSE and percentage-point
 gain, score distribution (minimum, P10, median, P90, maximum and negative case
 count), phase timings, and selected group indices. Algorithms with internal
@@ -78,6 +82,8 @@ A valid experiment must satisfy all of the following:
 4. Compare versions by final score first; use Linear and Attention MSE, negative-case count and runtime to identify which path and trade-off caused the change.
 
 The local standard HiF4 encoder is a reproducible approximation because the platform does not publish its internal standard encoder or hidden `MSE_STD`. Never present the local score as the official platform score.
+
+The autonomous stopping target is local full-300 score `20000`. Only a completed 50 Linear + 250 Attention result may satisfy it. Compact self-check success, 60-case screening score, partial averages, or estimated platform score cannot stop the search.
 
 After execution, remove generated `__pycache__` directories from `solution/`; do not retain copied mini-sample data or temporary evaluators in the repository.
 

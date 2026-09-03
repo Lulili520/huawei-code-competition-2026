@@ -12,7 +12,9 @@
   "screening_winner_agreements": 0,
   "screening_winner_agreement_rate": null,
   "stagnation_length": 1,
-  "non_evaluation_outcomes": {},
+  "non_evaluation_outcomes": {
+    "workflow_failed": 3
+  },
   "families": {
     "softmax_aware_qk": {
       "attempts": 1,
@@ -31,7 +33,34 @@
       "seconds": 685.7268339004368,
       "mean_score_delta": 23.777858611848,
       "positive_rate": 1.0
+    },
+    "discrete_attention_output_search": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "error_budgeted_hif4_hierarchy": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "activation_whitened_linear_blocks": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
     }
   },
-  "updated_at": "2026-09-03T09:41:04.698013+00:00"
+  "updated_at": "2026-09-03T12:07:39.506873+00:00"
 }

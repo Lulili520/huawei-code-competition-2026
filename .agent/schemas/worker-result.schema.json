@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["status", "algorithm_summary", "files_changed", "hyperparameter_configs", "selected_config", "diagnostics", "next_algorithms", "risks"],
+  "required": ["status", "algorithm_summary", "files_changed", "hyperparameter_configs", "selected_config", "diagnostics", "risks"],
   "properties": {
     "status": {"type": "string", "enum": ["implemented", "needs_review", "failed"]},
     "algorithm_summary": {"type": "string"},
@@ -30,31 +30,6 @@
         "signals": {"type": "array", "items": {"type": "string"}},
         "hook_implemented": {"type": "boolean"},
         "limitations": {"type": "array", "items": {"type": "string"}}
-      }
-    },
-    "next_algorithms": {
-      "type": "array",
-      "minItems": 3,
-      "maxItems": 3,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["algorithm_family", "version_suffix", "focus", "hypothesis", "implementation_base", "structural_change", "evidence", "evidence_strength", "novelty", "uncertainty", "expected_cost", "target_metric", "falsification"],
-        "properties": {
-          "algorithm_family": {"type": "string", "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$"},
-          "version_suffix": {"type": "string", "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$"},
-          "focus": {"type": "string", "enum": ["linear", "attention", "format", "combined"]},
-          "hypothesis": {"type": "string"},
-          "implementation_base": {"type": "string", "enum": ["based_on", "v0_hessian_repair", "scratch"]},
-          "structural_change": {"type": "string"},
-          "evidence": {"type": "string"},
-          "evidence_strength": {"type": "number", "minimum": 0, "maximum": 1},
-          "novelty": {"type": "number", "minimum": 0, "maximum": 1},
-          "uncertainty": {"type": "number", "minimum": 0, "maximum": 1},
-          "expected_cost": {"type": "number", "minimum": 0.25, "maximum": 3},
-          "target_metric": {"type": "string", "enum": ["score", "linear_mse", "attention_mse", "runtime", "combined"]},
-          "falsification": {"type": "string"}
-        }
       }
     },
     "risks": {"type": "array", "items": {"type": "string"}}

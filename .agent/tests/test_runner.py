@@ -57,6 +57,8 @@ class RunnerTest(unittest.TestCase):
         runner.RUNNER_PID_PATH = root / "runner.pid"
         self.config = {
             "max_agents": 6, "directions_per_version": 3,
+            "target_score": 20000.0,
+            "search_mix": {"explore_slots": 4, "exploit_slots": 2},
             "max_hyperparameter_configs": 3,
             "fixed_evaluation_cases": {"linear": 50, "attention": 250},
             "screening": {
@@ -97,11 +99,21 @@ class RunnerTest(unittest.TestCase):
         proposals = {"next_algorithms": [{
             "algorithm_family": "residual_subspace",
             "version_suffix": "residual_subspace", "focus": "linear",
+            "based_on": "v1_structural", "search_mode": "exploit",
+            "root_cause": "The output residual remains concentrated in a calibrated low-rank subspace.",
             "hypothesis": "repair a calibrated residual subspace",
             "implementation_base": "based_on",
             "structural_change": "Add a residual low-rank subspace repair after quantization.",
             "evidence": "Second-order reconstruction supports output-aware repair.",
+            "evidence_strength": 0.8,
         }]}
+        registry = runner.read_json(self.registry_path)
+        registry["versions"]["v1_structural"]["metrics"] = {
+            "linear_mse": 0.09, "attention_mse": 0.1, "score": 1.1,
+            "linear_case_count": 50, "attention_case_count": 250,
+            "dataset": "datasets/combined",
+        }
+        runner.atomic_json(self.registry_path, registry)
         self.assertEqual(runner.enqueue_followups(queue, self.config, task, proposals, 8.5), 1)
         self.assertEqual(queue["tasks"][-1]["version"], "v2_residual_subspace")
         self.assertEqual(queue["tasks"][-1]["based_on"], "v1_structural")
@@ -125,6 +137,17 @@ class RunnerTest(unittest.TestCase):
         self.stop.write_text("paused\n", encoding="utf-8")
         asyncio.run(runner.Scheduler(self.config, dry_run=True, once=True).loop())
         self.assertEqual(runner.load_queue()["tasks"][0]["status"], "queued")
+
+    def test_target_reached_dry_run_does_not_write_stop(self) -> None:
+        registry = runner.read_json(self.registry_path)
+        registry["versions"]["v0_hessian_repair"]["metrics"]["score"] = 20000.0
+        runner.atomic_json(self.registry_path, registry)
+        runner.save_queue(runner.initial_queue())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            asyncio.run(runner.Scheduler(self.config, dry_run=True, once=True).loop())
+        self.assertIn("target reached", output.getvalue())
+        self.assertFalse(self.stop.exists())
 
     def test_dry_run_is_non_mutating_and_capped_at_six_slots(self) -> None:
         queue = runner.initial_queue()
@@ -165,6 +188,110 @@ class RunnerTest(unittest.TestCase):
     def test_codex_preflight_checks_executable(self) -> None:
         passed, detail = runner.codex_preflight({"codex": {"command": sys.executable}})
         self.assertTrue(passed, detail)
+
+    def test_codex_argv_isolates_user_config_and_sets_role_effort(self) -> None:
+        config = {
+            "codex": {
+                "command": "codex", "search": True,
+                "ignore_user_config": True, "ephemeral": True,
+                "model": "gpt-test", "sandbox": "danger-full-access",
+                "service_tier": "priority",
+                "reasoning_effort": {"explore": "high", "exploit": "max"},
+            }
+        }
+        argv = runner.codex_argv(
+            config, Path("schema.json"), Path("result.json"), Path("workspace"),
+            role="exploit",
+        )
+        self.assertEqual(argv[:3], ["codex", "--search", "exec"])
+        self.assertIn("--ignore-user-config", argv)
+        self.assertIn("--ephemeral", argv)
+        self.assertIn('model_reasoning_effort="max"', argv)
+        self.assertNotIn("--disable", argv)
+        self.assertEqual(argv[-1], "-")
+
+    def test_recovery_requires_manifest_or_manual_scope_audit(self) -> None:
+        run_dir = Path(self.temporary.name) / "recover"
+        target = run_dir / "workspace" / "solution" / "v1_method"
+        target.mkdir(parents=True)
+        (target / "policy.md").write_text("p" * 512, encoding="utf-8")
+        (target / "solution.py").write_text("s" * 512, encoding="utf-8")
+        self.assertFalse(runner.recoverable_implementation_artifacts(run_dir, "v1_method"))
+        runner.atomic_json(run_dir / "legacy-scope-audit.json", {
+            "version": "v1_method", "outside_target_changes": 0,
+        })
+        self.assertTrue(runner.recoverable_implementation_artifacts(run_dir, "v1_method"))
+
+    def test_recovery_preserves_original_scope_baseline(self) -> None:
+        run_dir = Path(self.temporary.name) / "recover_scope"
+        workspace = run_dir / "workspace"
+        target = workspace / "solution" / "v1_method"
+        target.mkdir(parents=True)
+        outside = workspace / "README.md"
+        outside.write_text("original", encoding="utf-8")
+        before = runner.tree_manifest(workspace)
+        runner.atomic_json(run_dir / "workspace-before.json", {"files": before})
+        outside.write_text("escaped", encoding="utf-8")
+        (target / "solution.py").write_text("allowed", encoding="utf-8")
+        baseline = runner.recovery_workspace_baseline(run_dir, workspace, "v1_method")
+        with self.assertRaises(RuntimeError):
+            runner.assert_workspace_scope(
+                workspace, baseline, "v1_method", context="recovery test",
+            )
+
+    def test_report_recovery_requires_complete_formal_checkpoint(self) -> None:
+        run_dir = Path(self.temporary.name) / "report_recovery"
+        (run_dir / "workspace").mkdir(parents=True)
+        runner.atomic_json(run_dir / "worker-result.json", {
+            "result": {"status": "implemented"},
+        })
+        runner.atomic_json(run_dir / "evaluation-summary.json", {
+            "formal": {"results": []},
+        })
+        self.assertFalse(runner.recoverable_report_checkpoint(run_dir))
+        runner.atomic_json(run_dir / "checkpoint.json", {
+            "stage": "formal_evaluated", "solution_sha256": "abc",
+        })
+        self.assertTrue(runner.recoverable_report_checkpoint(run_dir))
+
+    def test_record_recovery_requires_reported_feedback_and_report(self) -> None:
+        run_dir = Path(self.temporary.name) / "record_recovery"
+        (run_dir / "workspace").mkdir(parents=True)
+        runner.atomic_json(run_dir / "worker-result.json", {
+            "result": {"status": "implemented"},
+        })
+        runner.atomic_json(run_dir / "evaluation-summary.json", {})
+        runner.atomic_json(run_dir / "checkpoint.json", {
+            "stage": "reported", "solution_sha256": "abc",
+        })
+        runner.atomic_json(run_dir / "report-feedback.json", {"status": "written"})
+        baseline = self.solution_root / "v0_hessian_repair"
+        (baseline / "report.md").write_text("report", encoding="utf-8")
+        self.assertTrue(runner.recoverable_record_checkpoint(
+            run_dir, "v0_hessian_repair",
+        ))
+
+    def test_recover_running_task_uses_implementation_checkpoint(self) -> None:
+        queue = runner.initial_queue()
+        task = runner.add_algorithm_task(
+            queue, self.config, based_on="v0_hessian_repair",
+            version="v1_recoverable", focus="linear", family="recoverable_method",
+            hypothesis="test a recoverable structural implementation",
+            base="based_on", priority=0.5,
+        )
+        task.update(status="running", stage="implementing", run_id="recover-run")
+        runner.save_queue(queue)
+        target = self.runs / "recover-run" / "workspace" / "solution" / task["version"]
+        target.mkdir(parents=True)
+        (target / "policy.md").write_text("p" * 512, encoding="utf-8")
+        (target / "solution.py").write_text("s" * 512, encoding="utf-8")
+        runner.atomic_json(self.runs / "recover-run" / "workspace-before.json", {
+            "files": runner.tree_manifest(self.runs / "recover-run" / "workspace"),
+        })
+        self.assertEqual(runner.recover_queue(), 1)
+        recovered = runner.load_queue()["tasks"][0]
+        self.assertEqual(recovered["resume_stage"], "implementation_finalize")
+        self.assertEqual(recovered["resume_run_id"], "recover-run")
 
     def test_stale_runner_pid_is_removed(self) -> None:
         runner.RUNNER_PID_PATH.write_text("99999999\n", encoding="utf-8")

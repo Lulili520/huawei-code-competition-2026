@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import hashlib
 import json
 import os
@@ -31,6 +32,7 @@ from core.strategy import (
     build_pareto_archive,
     build_process_metrics,
     compact_research_context,
+    infer_search_mode,
     metrics_are_current,
     proposal_fingerprint,
     select_diverse_batch,
@@ -76,6 +78,10 @@ class SchedulerBusyError(RuntimeError):
 
 class AgentExecutionTimeout(RuntimeError):
     """A Codex workflow step timed out; this is not an algorithm score."""
+
+
+class AgentProtocolError(RuntimeError):
+    """Codex exited without the structured response required by the workflow."""
 
 
 def utf8_environment() -> dict[str, str]:
@@ -142,6 +148,19 @@ def load_config() -> dict[str, Any]:
         raise ValueError("unsupported .agent/config.json schema")
     if not 1 <= int(config["max_agents"]) <= 6:
         raise ValueError("max_agents must be between 1 and 6")
+    if float(config.get("target_score", 0.0)) <= 0.0:
+        raise ValueError("target_score must be positive")
+    if not 60 <= int(config.get("agent_idle_timeout_seconds", 0)) <= int(
+        config["worker_timeout_seconds"]
+    ):
+        raise ValueError("agent_idle_timeout_seconds must be within the worker timeout")
+    search_mix = config.get("search_mix", {})
+    explore_slots = int(search_mix.get("explore_slots", -1))
+    exploit_slots = int(search_mix.get("exploit_slots", -1))
+    if explore_slots < 0 or exploit_slots < 0:
+        raise ValueError("search_mix slot counts must be non-negative")
+    if explore_slots + exploit_slots != int(config["max_agents"]):
+        raise ValueError("search_mix slots must sum to max_agents")
     if not 1 <= int(config["max_hyperparameter_configs"]) <= 3:
         raise ValueError("max_hyperparameter_configs must be between 1 and 3")
     if int(config.get("directions_per_version", 0)) != 3:
@@ -328,6 +347,8 @@ def record_experiment(
         "version": task["version"],
         "algorithm_family": task["algorithm_family"],
         "focus": task["focus"],
+        "search_mode": task.get("search_mode", infer_search_mode(task)),
+        "root_cause": task.get("root_cause", task.get("hypothesis")),
         "baseline": task.get("based_on"),
         "baseline_score": baseline_metrics.get("score"),
         "score": score,
@@ -378,6 +399,8 @@ def record_failed_experiment(
         "version": task.get("version"),
         "algorithm_family": task.get("algorithm_family"),
         "focus": task.get("focus"),
+        "search_mode": task.get("search_mode", infer_search_mode(task)),
+        "root_cause": task.get("root_cause", task.get("hypothesis")),
         "baseline": task.get("based_on"),
         "outcome": outcome,
         "failure": error[:2000],
@@ -395,6 +418,99 @@ def solution_hash(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def canonical_digest(value: Any) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def evaluation_contract(config: dict[str, Any]) -> dict[str, Any]:
+    """Describe only inputs that can change formal numerical semantics."""
+    dataset_dir = str(config["evaluation_datasets_dir"]).replace("\\", "/")
+    critical_files = [
+        ".agent/skills/hif4-evaluate/scripts/evaluate.py",
+        ".agent/skills/hif4-evaluate/scripts/scoring.py",
+        f"{dataset_dir}/manifest.json",
+    ]
+    return {
+        "evaluation_python": str(config.get("evaluation_python", sys.executable)),
+        "evaluation_datasets_dir": dataset_dir,
+        "fixed_evaluation_cases": config["fixed_evaluation_cases"],
+        "screening": config.get("screening", {}),
+        "critical_file_sha256": protected_manifest(ROOT, critical_files),
+    }
+
+
+def write_trust_manifest(
+    run_dir: Path, config: dict[str, Any], root_trust: dict[str, str],
+) -> dict[str, Any]:
+    contract = evaluation_contract(config)
+    dataset_manifest = ROOT / config["evaluation_datasets_dir"] / "manifest.json"
+    signatures = {
+        name: {"bytes": values[0], "mtime_ns": values[1]}
+        for name, values in dataset_file_signatures(dataset_manifest).items()
+    }
+    payload = {
+        "schema_version": 1,
+        "recorded_at": now(),
+        "protected_file_sha256": root_trust,
+        "evaluation_contract": contract,
+        "evaluation_contract_sha256": canonical_digest(contract),
+        "dataset_file_signatures": signatures,
+    }
+    atomic_json(run_dir / "trust-manifest.json", payload)
+    return payload
+
+
+def validate_formal_checkpoint(
+    run_dir: Path, config: dict[str, Any], *, stages: set[str],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Verify evaluation provenance, exact selected config and full case counts."""
+    checkpoint = read_json(run_dir / "checkpoint.json")
+    if checkpoint.get("stage") not in stages:
+        raise RuntimeError("formal checkpoint is at an unexpected stage")
+    evaluation_path = run_dir / "evaluation-summary.json"
+    evaluation = read_json(evaluation_path)
+    selected = selected_evaluation_result(evaluation)
+    validate_evaluation_case_counts(config, selected)
+    if selected.get("config") != checkpoint.get("selected"):
+        raise RuntimeError("formal checkpoint selected-config mismatch")
+    if selected.get("solution_sha256") != checkpoint.get("solution_sha256"):
+        raise RuntimeError("formal checkpoint candidate hash mismatch")
+
+    trust_path = run_dir / "trust-manifest.json"
+    if trust_path.is_file():
+        trust = read_json(trust_path)
+        recorded_contract = trust.get("evaluation_contract")
+        recorded_digest = trust.get("evaluation_contract_sha256")
+        if canonical_digest(recorded_contract) != recorded_digest:
+            raise RuntimeError("trust manifest contract digest is invalid")
+        if checkpoint.get("evaluation_contract_sha256") != recorded_digest:
+            raise RuntimeError("checkpoint and trust manifest contract mismatch")
+        if canonical_digest(evaluation) != checkpoint.get("evaluation_summary_sha256"):
+            raise RuntimeError("evaluation summary changed after checkpoint")
+        if canonical_digest(evaluation_contract(config)) != recorded_digest:
+            raise RuntimeError("formal evaluation contract changed before recovery")
+    else:
+        legacy = run_dir / "legacy-evaluation-audit.json"
+        if not legacy.is_file():
+            raise RuntimeError("formal checkpoint has no trust provenance")
+        audit = read_json(legacy)
+        if not (
+            audit.get("approved") is True
+            and audit.get("dataset") == config["evaluation_datasets_dir"]
+            and int(audit.get("linear_cases", -1))
+            == int(config["fixed_evaluation_cases"]["linear"])
+            and int(audit.get("attention_cases", -1))
+            == int(config["fixed_evaluation_cases"]["attention"])
+            and audit.get("selected") == checkpoint.get("selected")
+            and audit.get("solution_sha256") == checkpoint.get("solution_sha256")
+        ):
+            raise RuntimeError("legacy evaluation checkpoint audit is invalid")
+    return evaluation, selected
 
 
 @contextmanager
@@ -450,6 +566,7 @@ def policy_scaffold(task: dict[str, Any]) -> str:
 ## 实现基础
 
 - 实现方式：`{task['implementation_base']}`
+- 搜索角色：`{task.get('search_mode', 'explore')}`（explore 寻找新机制；exploit 深化已有正式正证据）
 - 实际代码来源、复用模块和重写模块：待说明
 
 ## 固定输入边界
@@ -458,7 +575,9 @@ NVFP4 反量化固定为 E2M1 值乘对应 E4M3 scale，每 16 个连续值共�
 
 ## 问题分析
 
-只写可定位的已验证事实：文件路径与函数/行号，或评测配置与精确指标。结合 Runner 注入的相关正例、反例与 Pareto 起点，说明它影响 Linear、Attention、格式搜索还是耗时。
+根因假设：{task.get('root_cause', task['hypothesis'])}
+
+先把最终输出误差分解到可观测项，再写可定位的已验证事实：文件路径与函数/行号，或评测配置与精确指标。Linear 至少区分 `ΔXWᵀ`、`XΔWᵀ` 和 `ΔXΔWᵀ`；Attention 至少区分居中 logit 误差、Softmax Jacobian 放大和 V 路径误差；格式方向至少区分削顶与小值分辨率不足。结合 Runner 注入的正例、反例与 Pareto 起点，说明哪一项是待验证的主导根因。
 
 ## 相关方案调研
 
@@ -530,6 +649,21 @@ def best_reference(registry: dict[str, Any]) -> str:
     return candidates[0][1]
 
 
+def best_score_state(registry: dict[str, Any]) -> tuple[str | None, float]:
+    candidates = [
+        (name, float(node["metrics"]["score"]))
+        for name, node in registry.get("versions", {}).items()
+        if metrics_use_current_profile(node.get("metrics"))
+        and node.get("status") not in {
+            "failed", "draft", "environment_failed", "evaluation_timeout",
+            "invalid_after_evaluation",
+        }
+    ]
+    if not candidates:
+        return None, float("-inf")
+    return max(candidates, key=lambda item: (item[1], item[0]))
+
+
 def next_version(suffix: str, registry: dict[str, Any]) -> str:
     numbers = [int(node["number"]) for node in registry["versions"].values()]
     number = max(numbers, default=-1) + 1
@@ -574,7 +708,9 @@ def reserve_algorithm(task: dict[str, Any], config: dict[str, Any]) -> None:
         "focus": task["focus"],
         "algorithm_family": task["algorithm_family"],
         "implementation_base": base,
+        "search_mode": task.get("search_mode", "explore"),
         "hypothesis": task["hypothesis"],
+        "root_cause": task.get("root_cause", task["hypothesis"]),
         "structural_change": task.get("structural_change", ""),
         "target_metric": task.get("target_metric", "score"),
         "falsification": task.get("falsification", ""),
@@ -593,6 +729,7 @@ def add_algorithm_task(
     evidence_strength: float = 0.5, novelty: float = 0.5,
     uncertainty: float = 0.5, expected_cost: float = 1.0,
     target_metric: str = "score", falsification: str = "",
+    search_mode: str | None = None, root_cause: str = "",
 ) -> dict[str, Any]:
     if PARAM_ONLY.search(family) or PARAM_ONLY.search(version):
         raise ValueError("pure parameter variants are not valid algorithm versions")
@@ -604,6 +741,8 @@ def add_algorithm_task(
     ):
         raise ValueError(f"duplicate algorithm proposal: {family}")
     priority_hint = float(priority) if 0.0 <= float(priority) <= 1.0 else 0.5
+    if search_mode is not None and search_mode not in {"explore", "exploit"}:
+        raise ValueError("search_mode must be explore or exploit")
     task = {
         "task_id": uuid.uuid4().hex[:12],
         "kind": "algorithm",
@@ -612,6 +751,7 @@ def add_algorithm_task(
         "focus": focus,
         "algorithm_family": family,
         "hypothesis": hypothesis,
+        "root_cause": root_cause.strip() or hypothesis,
         "structural_change": structural_change,
         "evidence": evidence,
         "evidence_strength": min(1.0, max(0.0, float(evidence_strength))),
@@ -622,6 +762,7 @@ def add_algorithm_task(
         "falsification": falsification,
         "proposal_fingerprint": fingerprint,
         "implementation_base": base,
+        "search_mode": search_mode,
         "priority": 0.0,
         "priority_hint": priority_hint,
         "priority_components": {},
@@ -632,6 +773,7 @@ def add_algorithm_task(
         "run_id": None,
         "error": None,
     }
+    task["search_mode"] = infer_search_mode(task)
     experiments = load_experiments()["experiments"] if EXPERIMENTS_PATH.is_file() else []
     priority_value, components = adaptive_priority(
         task, read_json(REGISTRY_PATH), experiments
@@ -645,16 +787,29 @@ def add_algorithm_task(
 
 def codex_argv(
     config: dict[str, Any], schema: Path, output: Path, workspace: Path,
-    sandbox: str | None = None,
+    sandbox: str | None = None, role: str = "explore",
 ) -> list[str]:
     codex = config["codex"]
-    argv = [
-        codex["command"], "exec", "--json", "--color", "never",
+    argv = [codex["command"]]
+    if codex.get("search", False):
+        argv.append("--search")
+    argv.append("exec")
+    if codex.get("ignore_user_config", False):
+        argv.append("--ignore-user-config")
+    if codex.get("ephemeral", False):
+        argv.append("--ephemeral")
+    if codex.get("model"):
+        argv.extend(["--model", str(codex["model"])])
+    effort = codex.get("reasoning_effort", {}).get(role)
+    if effort:
+        argv.extend(["-c", f'model_reasoning_effort="{effort}"'])
+    if codex.get("service_tier"):
+        argv.extend(["-c", f'service_tier="{codex["service_tier"]}"'])
+    argv.extend([
+        "--json", "--color", "never",
         "--sandbox", sandbox or codex["sandbox"], "--cd", str(workspace),
         "--output-schema", str(schema), "--output-last-message", str(output), "-",
-    ]
-    if codex.get("model"):
-        argv[2:2] = ["--model", codex["model"]]
+    ])
     return argv
 
 
@@ -679,18 +834,24 @@ def extract_session(value: Any) -> str | None:
 async def run_codex(
     config: dict[str, Any], run_dir: Path, prompt: str, schema: Path,
     timeout: int, workspace: Path | None = None, sandbox: str | None = None,
+    role: str = "explore",
 ) -> tuple[int, str | None, dict[str, Any] | None]:
     run_dir.mkdir(parents=True, exist_ok=True)
     events_path = run_dir / "events.jsonl"
     stderr_path = run_dir / "stderr.log"
     last_path = run_dir / "last-message.json"
+    # A resumed stage can reuse its directory.  Never accept a structured
+    # response left by an earlier, timed-out Codex process.
+    last_path.unlink(missing_ok=True)
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     process = None
     launch_error: OSError | None = None
     for attempt in range(1, int(config.get("environment_launch_retries", 1)) + 1):
         try:
             process = await asyncio.create_subprocess_exec(
-                *codex_argv(config, schema, last_path, workspace or ROOT, sandbox),
+                *codex_argv(
+                    config, schema, last_path, workspace or ROOT, sandbox, role,
+                ),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -709,15 +870,24 @@ async def run_codex(
             f"Codex could not start after {config.get('environment_launch_retries', 1)} attempts: {launch_error}"
         )
     assert process.stdin and process.stdout and process.stderr
-    process.stdin.write(prompt.encode("utf-8"))
-    await process.stdin.drain()
-    process.stdin.close()
+    try:
+        process.stdin.write(prompt.encode("utf-8"))
+        await process.stdin.drain()
+        process.stdin.close()
+    except asyncio.CancelledError:
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
+        raise
     session_id: str | None = None
+    started = time.monotonic()
+    last_progress = started
 
     async def stdout_reader() -> None:
-        nonlocal session_id
+        nonlocal session_id, last_progress
         with events_path.open("a", encoding="utf-8") as stream:
             while line := await process.stdout.readline():
+                last_progress = time.monotonic()
                 text = line.decode("utf-8", errors="replace")
                 stream.write(text)
                 stream.flush()
@@ -728,36 +898,85 @@ async def run_codex(
                     pass
 
     async def stderr_reader() -> None:
+        nonlocal last_progress
         with stderr_path.open("a", encoding="utf-8") as stream:
             while line := await process.stderr.readline():
+                last_progress = time.monotonic()
                 stream.write(line.decode("utf-8", errors="replace"))
                 stream.flush()
 
     readers = [asyncio.create_task(stdout_reader()), asyncio.create_task(stderr_reader())]
-    timed_out = False
-    try:
-        await asyncio.wait_for(process.wait(), timeout=timeout)
-    except asyncio.TimeoutError:
-        timed_out = True
-        if os.name == "nt":
-            process.send_signal(signal.CTRL_BREAK_EVENT)
-        else:
-            process.send_signal(signal.SIGINT)
+    wait_task = asyncio.create_task(process.wait())
+
+    async def stop_child() -> None:
+        if process.returncode is None:
+            try:
+                process.send_signal(
+                    signal.CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGINT
+                )
+            except (ProcessLookupError, OSError):
+                pass
         try:
-            await asyncio.wait_for(process.wait(), timeout=10)
+            await asyncio.wait_for(asyncio.shield(wait_task), timeout=10)
         except asyncio.TimeoutError:
-            process.terminate()
-            await process.wait()
-    await asyncio.gather(*readers, return_exceptions=True)
-    if timed_out:
-        raise AgentExecutionTimeout(f"Codex step exceeded {timeout} seconds")
+            if process.returncode is None:
+                process.kill()
+            await wait_task
+
+    idle_timeout = int(config.get("agent_idle_timeout_seconds", timeout))
+    timeout_reason: str | None = None
+    try:
+        while not wait_task.done():
+            await asyncio.wait({wait_task}, timeout=1.0)
+            if wait_task.done():
+                break
+            moment = time.monotonic()
+            if moment - started >= timeout:
+                timeout_reason = f"Codex step exceeded {timeout} seconds"
+                break
+            if moment - last_progress >= idle_timeout:
+                timeout_reason = (
+                    f"Codex step produced no events for {idle_timeout} seconds"
+                )
+                break
+        if timeout_reason:
+            await stop_child()
+    except asyncio.CancelledError:
+        await stop_child()
+        for reader in readers:
+            reader.cancel()
+        await asyncio.gather(*readers, return_exceptions=True)
+        raise
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*readers, return_exceptions=True), timeout=10,
+        )
+    except asyncio.TimeoutError:
+        for reader in readers:
+            reader.cancel()
+        await asyncio.gather(*readers, return_exceptions=True)
+    if timeout_reason:
+        raise AgentExecutionTimeout(timeout_reason)
     result = None
     if last_path.is_file():
         try:
             result = json.loads(last_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             result = None
-    return process.returncode or 0, session_id, result
+    return_code = process.returncode or 0
+    if return_code:
+        stderr_tail = ""
+        if stderr_path.is_file():
+            stderr_tail = stderr_path.read_text(
+                encoding="utf-8", errors="replace",
+            )[-2000:].strip()
+        raise EnvironmentLaunchError(
+            f"Codex CLI exited with code {return_code}"
+            + (f": {stderr_tail}" if stderr_tail else "")
+        )
+    if result is None:
+        raise AgentProtocolError("Codex exited without a valid structured response")
+    return return_code, session_id, result
 
 
 def implementation_prompt(task: dict[str, Any]) -> str:
@@ -771,6 +990,152 @@ def implementation_prompt(task: dict[str, Any]) -> str:
         + json.dumps(context, ensure_ascii=False, indent=2)
         + "\n\n研究记忆只用于形成可证伪方案；当前版本仍须独立核对代码、理论与评测证据。"
     )
+
+
+def implementation_finalize_prompt(task: dict[str, Any]) -> str:
+    return (
+        "A previous implementation Agent timed out after writing substantial artifacts. "
+        "Do not restart the research or redesign the algorithm. Read AGENTS.md, the policy "
+        "skill, and the existing target version. Check policy.md, solution.py and optional "
+        "trials for completeness; repair only concrete syntax, interface, numerical-safety or "
+        "scope problems; run bounded non-official smoke checks; then return the worker-result "
+        "JSON. Do not run datasets, create report.md, or propose follow-up algorithms.\n\n"
+        "Target task:\n" + json.dumps(task, ensure_ascii=False, indent=2)
+    )
+
+
+def sync_workspace_instructions(workspace: Path) -> None:
+    """Refresh trusted workflow instructions before resuming an old snapshot."""
+    shutil.copy2(ROOT / "AGENTS.md", workspace / "AGENTS.md")
+    for name in ("prompts", "schemas", "skills"):
+        source = AGENT_ROOT / name
+        target = workspace / ".agent" / name
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(source, target)
+
+
+def recoverable_implementation_artifacts(run_dir: Path, version: str) -> bool:
+    target = run_dir / "workspace" / "solution" / version
+    policy = target / "policy.md"
+    solution = target / "solution.py"
+    artifacts_exist = (
+        policy.is_file() and policy.stat().st_size >= 512
+        and solution.is_file() and solution.stat().st_size >= 512
+    )
+    # New runs persist the pre-Agent manifest.  The marker exists only for
+    # legacy snapshots that were manually audited before this guard existed.
+    audit = run_dir / "legacy-scope-audit.json"
+    legacy_audited = False
+    if audit.is_file():
+        try:
+            payload = read_json(audit)
+            legacy_audited = (
+                payload.get("version") == version
+                and int(payload.get("outside_target_changes", -1)) == 0
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            legacy_audited = False
+    return artifacts_exist and (
+        (run_dir / "workspace-before.json").is_file() or legacy_audited
+    )
+
+
+def recoverable_report_checkpoint(run_dir: Path) -> bool:
+    """Check that every artifact required by the reporting resume path exists."""
+    if not (run_dir / "workspace").is_dir():
+        return False
+    required = (
+        run_dir / "worker-result.json",
+        run_dir / "evaluation-summary.json",
+        run_dir / "checkpoint.json",
+    )
+    if not all(path.is_file() for path in required):
+        return False
+    try:
+        worker = read_json(required[0]).get("result") or {}
+        checkpoint = read_json(required[2])
+        return (
+            worker.get("status") == "implemented"
+            and checkpoint.get("stage") == "formal_evaluated"
+            and bool(checkpoint.get("solution_sha256"))
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def recoverable_record_checkpoint(run_dir: Path, version: str) -> bool:
+    """Check artifacts needed to finish registry/queue recording without Agents."""
+    required = (
+        run_dir / "worker-result.json",
+        run_dir / "evaluation-summary.json",
+        run_dir / "checkpoint.json",
+        run_dir / "report-feedback.json",
+        SOLUTION_ROOT / version / "solution.py",
+        SOLUTION_ROOT / version / "report.md",
+    )
+    if not all(path.is_file() for path in required):
+        return False
+    try:
+        worker = read_json(required[0]).get("result") or {}
+        checkpoint = read_json(required[2])
+        feedback = read_json(required[3])
+        return (
+            worker.get("status") == "implemented"
+            and checkpoint.get("stage") == "reported"
+            and feedback.get("status") == "written"
+            and bool(checkpoint.get("solution_sha256"))
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def recovery_workspace_baseline(
+    run_dir: Path, workspace: Path, version: str,
+) -> dict[str, str]:
+    """Restore the original write-scope baseline for implementation recovery.
+
+    Trusted instructions may legitimately be refreshed between runs.  All
+    other paths keep their original digests, so an Agent's pre-timeout
+    out-of-scope writes remain observable after finalization.
+    """
+    manifest_path = run_dir / "workspace-before.json"
+    if manifest_path.is_file():
+        payload = read_json(manifest_path)
+        original = payload.get("files")
+        if not isinstance(original, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in original.items()
+        ):
+            raise RuntimeError("invalid workspace-before recovery manifest")
+        baseline = dict(original)
+    else:
+        audit = run_dir / "legacy-scope-audit.json"
+        if not audit.is_file():
+            raise RuntimeError("implementation recovery lacks a scope baseline")
+        payload = read_json(audit)
+        if (
+            payload.get("version") != version
+            or int(payload.get("outside_target_changes", -1)) != 0
+        ):
+            raise RuntimeError("legacy implementation scope audit is invalid")
+        baseline = tree_manifest(workspace)
+
+    current = tree_manifest(workspace)
+    trusted_prefixes = (
+        "AGENTS.md", ".agent/prompts/", ".agent/schemas/", ".agent/skills/",
+    )
+
+    def trusted(path: str) -> bool:
+        return path == trusted_prefixes[0] or path.startswith(trusted_prefixes[1:])
+
+    for path in list(baseline):
+        if trusted(path):
+            baseline.pop(path)
+    for path, digest in current.items():
+        if trusted(path):
+            baseline[path] = digest
+    return baseline
 
 
 def create_workspace(run_dir: Path, source_root: Path | None = None) -> Path:
@@ -824,7 +1189,7 @@ async def structural_review(
     prompt += "\n\nVersion task:\n" + json.dumps(task, ensure_ascii=False, indent=2)
     code, _, result = await run_codex(
         config, run_dir / "review", prompt, SCHEMAS / "review-result.schema.json",
-        int(config["worker_timeout_seconds"]), workspace,
+        int(config["worker_timeout_seconds"]), workspace, role="review",
     )
     checks = result.get("checks", {}) if result else {}
     all_checks_passed = bool(checks) and all(value is True for value in checks.values())
@@ -1070,21 +1435,31 @@ async def write_report(
     }
     prompt = (PROMPTS / "report.md").read_text(encoding="utf-8")
     prompt += "\n\n版本任务：\n" + json.dumps(task, ensure_ascii=False, indent=2)
+    prompt += "\n\n裁剪后的全局研究记忆与可选 Pareto 来源：\n" + json.dumps(
+        research_context(task), ensure_ascii=False, indent=2,
+    )
     prompt += "\n\n真实评测结果：\n" + json.dumps(
         {"selected": compact_result(selected), "evaluation": compact_evaluation},
         ensure_ascii=False, indent=2
     )
     prompt += (
         "\n\n除写 report.md 外，请在结构化返回值中提炼可被下一轮复用的假设判定、"
-        "正负经验和最多三个原则更新建议。原则建议不会自动生效，Runner 会按独立算法族证据门禁处理。"
+        "正负经验、恰好三个后续结构方向和最多三个原则更新建议。后续方向必须在看到本次正式结果后形成，"
+        "并保持两个 explore、一个 exploit；原则建议不会自动生效，Runner 会按独立算法族证据门禁处理。"
     )
     code, _, result = await run_codex(
         config, run_dir / "report", prompt, SCHEMAS / "report-result.schema.json",
-        int(config["worker_timeout_seconds"]), workspace,
+        int(config["worker_timeout_seconds"]), workspace, role="report",
     )
     report = workspace / "solution" / task["version"] / "report.md"
     if code or not result or result.get("status") != "written" or not report.is_file():
         raise RuntimeError("report agent did not produce report.md")
+    directions = result.get("next_algorithms", [])
+    modes = [item.get("search_mode") for item in directions]
+    if len(directions) != 3 or modes.count("explore") != 2 or modes.count("exploit") != 1:
+        raise RuntimeError(
+            "report agent must propose exactly two explore and one exploit direction"
+        )
     import_version(workspace, task["version"], report_only=True)
     screening_rank = [
         item["config"]
@@ -1161,14 +1536,25 @@ def enqueue_followups(
     for proposal in result.get("next_algorithms", [])[: int(config["directions_per_version"])]:
         structural = str(proposal.get("structural_change", "")).strip()
         evidence = str(proposal.get("evidence", "")).strip()
+        root_cause = str(proposal.get("root_cause", "")).strip()
         family = str(proposal.get("algorithm_family", ""))
-        if len(structural) < 20 or len(evidence) < 10 or PARAM_ONLY.search(family):
+        mode = str(proposal.get("search_mode", ""))
+        if (
+            len(structural) < 20 or len(evidence) < 10 or len(root_cause) < 20
+            or PARAM_ONLY.search(family) or mode not in {"explore", "exploit"}
+        ):
             continue
         registry = read_json(REGISTRY_PATH)
+        based_on = str(proposal.get("based_on") or task["version"])
+        source = registry.get("versions", {}).get(based_on)
+        if not source or not metrics_use_current_profile(source.get("metrics")):
+            continue
+        if mode == "exploit" and float(proposal.get("evidence_strength", 0.0)) < 0.6:
+            continue
         version = next_version(proposal["version_suffix"], registry)
         try:
             add_algorithm_task(
-                queue, config, based_on=task["version"], version=version,
+                queue, config, based_on=based_on, version=version,
                 focus=proposal["focus"], family=family,
                 hypothesis=proposal["hypothesis"],
                 base=proposal["implementation_base"], priority=0.5,
@@ -1180,6 +1566,7 @@ def enqueue_followups(
                 expected_cost=float(proposal.get("expected_cost", 1.0)),
                 target_metric=str(proposal.get("target_metric", "score")),
                 falsification=str(proposal.get("falsification", "")),
+                search_mode=mode, root_cause=root_cause,
             )
         except (ValueError, FileExistsError):
             continue
@@ -1192,6 +1579,12 @@ def rerank_queued_tasks(queue: dict[str, Any]) -> bool:
     experiments = load_experiments()["experiments"] if EXPERIMENTS_PATH.is_file() else []
     changed = False
     for task in queue["tasks"]:
+        if task.get("search_mode") not in {"explore", "exploit"}:
+            task["search_mode"] = infer_search_mode(task)
+            changed = True
+        if not task.get("root_cause"):
+            task["root_cause"] = task.get("hypothesis", "unspecified root cause")
+            changed = True
         if task.get("status") != "queued":
             continue
         priority, components = adaptive_priority(task, registry, experiments)
@@ -1238,18 +1631,49 @@ class Scheduler:
         root_trust = protected_manifest(ROOT, self.config["protected_files"])
         resume_report = (
             task.get("resume_stage") == "reporting"
-            and (run_dir / "evaluation-summary.json").is_file()
-            and (run_dir / "worker-result.json").is_file()
-            and (run_dir / "workspace").is_dir()
+            and recoverable_report_checkpoint(run_dir)
         )
-        if resume_report:
+        resume_record = (
+            task.get("resume_stage") == "recording"
+            and recoverable_record_checkpoint(run_dir, task["version"])
+        )
+        resume_finalize = (
+            task.get("resume_stage") == "implementation_finalize"
+            and (run_dir / "workspace").is_dir()
+            and recoverable_implementation_artifacts(run_dir, task["version"])
+        )
+        if resume_record:
+            evaluation, selected = validate_formal_checkpoint(
+                run_dir, self.config, stages={"reported"},
+            )
+            checkpoint = read_json(run_dir / "checkpoint.json")
+            main_path = SOLUTION_ROOT / task["version"] / "solution.py"
+            if solution_hash(main_path) != selected["solution_sha256"]:
+                raise RuntimeError("cannot resume recording: evaluated solution hash changed")
+            report_feedback = read_json(run_dir / "report-feedback.json")
+            report_path = SOLUTION_ROOT / task["version"] / "report.md"
+            if (
+                checkpoint.get("report_feedback_sha256")
+                and solution_hash(run_dir / "report-feedback.json")
+                != checkpoint["report_feedback_sha256"]
+            ):
+                raise RuntimeError("cannot resume recording: report feedback changed")
+            if (
+                checkpoint.get("report_sha256")
+                and solution_hash(report_path) != checkpoint["report_sha256"]
+            ):
+                raise RuntimeError("cannot resume recording: report changed")
+            await self.update_task(task["task_id"], stage="recording")
+        elif resume_report:
             workspace = run_dir / "workspace"
+            sync_workspace_instructions(workspace)
             worker_payload = read_json(run_dir / "worker-result.json")
             result = worker_payload.get("result")
             if not result or result.get("status") != "implemented":
                 raise RuntimeError("cannot resume: valid worker result is missing")
-            evaluation = read_json(run_dir / "evaluation-summary.json")
-            selected = selected_evaluation_result(evaluation)
+            evaluation, selected = validate_formal_checkpoint(
+                run_dir, self.config, stages={"formal_evaluated"},
+            )
             selected_source = ROOT / selected["solution_path"]
             if not selected_source.is_file() or solution_hash(selected_source) != selected["solution_sha256"]:
                 raise RuntimeError("cannot resume: selected evaluated solution hash changed")
@@ -1258,13 +1682,36 @@ class Scheduler:
                 shutil.copy2(selected_source, main_path)
             await self.update_task(task["task_id"], stage="reporting")
         else:
-            workspace = await asyncio.to_thread(create_workspace, run_dir)
-            workspace_before = tree_manifest(workspace)
+            if resume_finalize:
+                workspace = run_dir / "workspace"
+                sync_workspace_instructions(workspace)
+                workspace_before = recovery_workspace_baseline(
+                    run_dir, workspace, task["version"],
+                )
+                implementation_run_dir = run_dir / f"finalize-{int(time.time())}"
+                prompt = implementation_finalize_prompt(task)
+                role = "finalize"
+            else:
+                workspace = await asyncio.to_thread(create_workspace, run_dir)
+                workspace_before = tree_manifest(workspace)
+                atomic_json(run_dir / "workspace-before.json", {
+                    "schema_version": 1,
+                    "files": workspace_before,
+                    "resume_finalize": False,
+                    "recorded_at": now(),
+                })
+                implementation_run_dir = run_dir
+                prompt = implementation_prompt(task)
+                role = infer_search_mode(task)
+            # This stage precedes formal evaluation, so its eventual score must
+            # be bound to the current evaluation contract rather than a stale
+            # pre-recovery one.
+            write_trust_manifest(run_dir, self.config, root_trust)
             await self.update_task(task["task_id"], stage="implementing")
             code, session, result = await run_codex(
-                self.config, run_dir, implementation_prompt(task),
+                self.config, implementation_run_dir, prompt,
                 SCHEMAS / "worker-result.schema.json",
-                int(self.config["worker_timeout_seconds"]), workspace,
+                int(self.config["worker_timeout_seconds"]), workspace, role=role,
             )
             atomic_json(run_dir / "worker-result.json", {
                 "session_id": session, "exit_code": code, "result": result,
@@ -1297,39 +1744,87 @@ class Scheduler:
             selected, evaluation = await evaluate_candidates(
                 self.config, task, run_dir, self.evaluation_lock
             )
+            trust = read_json(run_dir / "trust-manifest.json")
             atomic_json(run_dir / "checkpoint.json", {
                 "schema_version": 1,
                 "stage": "formal_evaluated",
                 "selected": selected["config"],
                 "solution_sha256": selected["solution_sha256"],
+                "evaluation_contract_sha256": trust["evaluation_contract_sha256"],
+                "evaluation_summary_sha256": canonical_digest(evaluation),
                 "updated_at": now(),
             })
-        shutil.copy2(
-            SOLUTION_ROOT / task["version"] / "solution.py",
-            workspace / "solution" / task["version"] / "solution.py",
-        )
-        before_report = tree_manifest(workspace)
-        await self.update_task(task["task_id"], stage="reporting")
-        report_feedback = await write_report(
-            self.config, task, run_dir, selected, evaluation, workspace
-        )
-        after_report = tree_manifest(workspace)
-        changed_by_report = sorted(
-            path for path in set(before_report) | set(after_report)
-            if before_report.get(path) != after_report.get(path)
-        )
-        expected_report = f"solution/{task['version']}/report.md"
-        if any(path != expected_report for path in changed_by_report):
-            raise RuntimeError(
-                "report Agent modified files other than report.md: "
-                + ", ".join(changed_by_report)
+        if not resume_record:
+            shutil.copy2(
+                SOLUTION_ROOT / task["version"] / "solution.py",
+                workspace / "solution" / task["version"] / "solution.py",
             )
-        atomic_json(run_dir / "checkpoint.json", {
-            "schema_version": 1, "stage": "reported",
-            "selected": selected["config"],
-            "solution_sha256": selected["solution_sha256"],
-            "updated_at": now(),
-        })
+            before_report = tree_manifest(workspace)
+            root_version_before_report = tree_manifest(
+                SOLUTION_ROOT / task["version"]
+            )
+            await self.update_task(task["task_id"], stage="reporting")
+            report_feedback = await write_report(
+                self.config, task, run_dir, selected, evaluation, workspace
+            )
+            after_report = tree_manifest(workspace)
+            changed_by_report = sorted(
+                path for path in set(before_report) | set(after_report)
+                if before_report.get(path) != after_report.get(path)
+            )
+            expected_report = f"solution/{task['version']}/report.md"
+            if any(path != expected_report for path in changed_by_report):
+                raise RuntimeError(
+                    "report Agent modified files other than report.md: "
+                    + ", ".join(changed_by_report)
+                )
+            root_version_after_report = tree_manifest(
+                SOLUTION_ROOT / task["version"]
+            )
+            root_changes = sorted(
+                path
+                for path in set(root_version_before_report) | set(root_version_after_report)
+                if root_version_before_report.get(path)
+                != root_version_after_report.get(path)
+            )
+            if any(path != "report.md" for path in root_changes):
+                raise RuntimeError(
+                    "report Agent modified root version files other than report.md: "
+                    + ", ".join(root_changes)
+                )
+            if solution_hash(
+                SOLUTION_ROOT / task["version"] / "solution.py"
+            ) != selected["solution_sha256"]:
+                raise RuntimeError("report Agent changed the formally evaluated solution")
+            formal_checkpoint = read_json(run_dir / "checkpoint.json")
+            atomic_json(run_dir / "checkpoint.json", {
+                "schema_version": 1, "stage": "reported",
+                "selected": selected["config"],
+                "solution_sha256": selected["solution_sha256"],
+                "evaluation_contract_sha256": formal_checkpoint.get(
+                    "evaluation_contract_sha256"
+                ),
+                "evaluation_summary_sha256": formal_checkpoint.get(
+                    "evaluation_summary_sha256"
+                ),
+                "report_feedback_sha256": solution_hash(
+                    run_dir / "report-feedback.json"
+                ),
+                "report_sha256": solution_hash(
+                    SOLUTION_ROOT / task["version"] / "report.md"
+                ),
+                "updated_at": now(),
+            })
+        # Re-validate the formal evidence immediately before the serialized
+        # registry transition.  This catches post-evaluation file drift even
+        # when no report Agent is involved in a recording-only recovery.
+        _, verified_selected = validate_formal_checkpoint(
+            run_dir, self.config, stages={"reported"},
+        )
+        if solution_hash(
+            SOLUTION_ROOT / task["version"] / "solution.py"
+        ) != verified_selected["solution_sha256"]:
+            raise RuntimeError("evaluated solution changed before registry recording")
         assert_protected_unchanged(ROOT, root_trust, context="complete algorithm task")
         # Registry update and proposal creation are one serialized state transition.
         # Otherwise two workers can allocate the same global numeric version.
@@ -1341,17 +1836,23 @@ class Scheduler:
             )
             queue = load_queue()
             enqueue_followups(
-                queue, self.config, task, result, float(selected["total_score"])
+                queue, self.config, task, report_feedback,
+                float(selected["total_score"]),
             )
             rerank_queued_tasks(queue)
             save_queue(queue)
 
-    async def load_ranked_queue(self) -> dict[str, Any]:
+    async def load_ranked_queue(
+        self,
+    ) -> tuple[dict[str, Any], tuple[str | None, float]]:
         async with self.queue_lock:
             queue = load_queue()
             if rerank_queued_tasks(queue):
                 save_queue(queue)
-            return queue
+            # The registry is updated under the same lock at task completion.
+            # Returning the target state here prevents a newly completed winner
+            # from racing with one more dispatch batch.
+            return queue, best_score_state(read_json(REGISTRY_PATH))
 
     async def worker(self, task: dict[str, Any]) -> None:
         run_id = str(task.get("resume_run_id") or f"{task['task_id']}-{int(time.time())}")
@@ -1375,31 +1876,46 @@ class Scheduler:
                 "kind": task["kind"], "state": "completed", "finished_at": now(),
             })
         except asyncio.CancelledError:
-            # Scheduler shutdown is not evidence against the algorithm. Leave the
-            # draft intact and make the complete task eligible for a clean retry.
-            await self.update_task(
-                task["task_id"], status="queued", run_id=None,
-                stage="queued", error="requeued after scheduler interruption",
-            )
-            atomic_json(run_dir / "run.json", {
-                "schema_version": 1, "run_id": run_id, "task_id": task["task_id"],
-                "kind": task["kind"], "state": "interrupted",
-                "finished_at": now(),
-            })
-            raise
-        except AgentExecutionTimeout as error:
+            # Preserve run_id and the last durable stage.  recover() decides
+            # whether to reuse formal/report or implementation artifacts.
             async with self.queue_lock:
                 queue = load_queue()
                 queued_task = next(
                     item for item in queue["tasks"] if item["task_id"] == task["task_id"]
                 )
                 failed_stage = queued_task.get("stage")
+                queued_task.update(
+                    status="workflow_failed", stage="interrupted",
+                    failed_stage=failed_stage,
+                    error="scheduler interrupted; checkpoint preserved",
+                    updated_at=now(),
+                )
+                save_queue(queue)
+            atomic_json(run_dir / "run.json", {
+                "schema_version": 1, "run_id": run_id, "task_id": task["task_id"],
+                "kind": task["kind"], "state": "interrupted",
+                "failed_stage": failed_stage,
+                "finished_at": now(),
+            })
+            raise
+        except (AgentExecutionTimeout, AgentProtocolError) as error:
+            async with self.queue_lock:
+                queue = load_queue()
+                queued_task = next(
+                    item for item in queue["tasks"] if item["task_id"] == task["task_id"]
+                )
+                failed_stage = queued_task.get("stage")
+                failure_stage = (
+                    "agent_timeout"
+                    if isinstance(error, AgentExecutionTimeout)
+                    else "agent_protocol_error"
+                )
                 mark_failed_version(task, str(error), status="workflow_failed")
                 record_failed_experiment(
                     task, run_dir.name, str(error), outcome="workflow_failed"
                 )
                 queued_task.update(
-                    status="workflow_failed", stage="agent_timeout",
+                    status="workflow_failed", stage=failure_stage,
                     failed_stage=failed_stage, error=str(error), updated_at=now(),
                 )
                 rerank_queued_tasks(queue)
@@ -1482,16 +1998,44 @@ class Scheduler:
                     return
                 await asyncio.sleep(0.5)
                 continue
-            queue = await self.load_ranked_queue()
-            pending = [task for task in queue["tasks"] if task["status"] == "queued"]
+            queue, (best_version, best_score) = await self.load_ranked_queue()
+            target_score = float(self.config["target_score"])
+            if best_score >= target_score:
+                print(
+                    f"target reached: {best_version} score={best_score:.6f} "
+                    f">= {target_score:.6f}; new dispatch paused"
+                )
+                if not self.dry_run:
+                    STOP_PATH.write_text(
+                        f"target reached by {best_version}: {best_score:.12f}\n",
+                        encoding="utf-8",
+                    )
+                if not self.running or self.dry_run:
+                    return
+                await asyncio.sleep(0.5)
+                continue
+            pending = [
+                task for task in queue["tasks"]
+                if task["status"] == "queued" and task["task_id"] not in self.running
+            ]
+            active = [
+                task for task in queue["tasks"]
+                if task["status"] == "running" or task["task_id"] in self.running
+            ]
             available = max_agents - len(self.running)
-            dispatch_batch = select_diverse_batch(pending, available)
+            mix = self.config["search_mix"]
+            dispatch_batch = select_diverse_batch(
+                pending, available, active=active,
+                explore_slots=int(mix["explore_slots"]),
+                exploit_slots=int(mix["exploit_slots"]),
+            )
             for offset, task in enumerate(dispatch_batch, start=1):
                 if self.dry_run:
                     print(
                         f"DRY-RUN slot={len(self.running) + offset} {task['kind']} "
                         f"{task['task_id']} {task.get('version','')} "
                         f"priority={float(task.get('priority', 0.0)):.6f} "
+                        f"mode={infer_search_mode(task)} "
                         f"cell={task.get('focus')}/{task.get('algorithm_family')}"
                     )
                     continue
@@ -1506,13 +2050,15 @@ class Scheduler:
             await asyncio.sleep(0.5)
 
 
-def seed(queue: dict[str, Any], config: dict[str, Any]) -> None:
+def seed(queue: dict[str, Any], config: dict[str, Any]) -> int:
     seeds = [
         {
             "based_on": "v0_softmax_aware_qk",
             "suffix": "discrete_attention_output_search",
             "focus": "attention",
             "family": "discrete_attention_output_search",
+            "search_mode": "explore",
+            "root_cause": "独立最小化 Q/K 张量误差忽略逐行平移不变性和 Softmax Jacobian，局部 MSE 与最终 Attention 输出损失错位。",
             "hypothesis": "直接以校准 softmax 输出误差联合选择合法 Q/K HiF4 块参数，可减少张量 MSE 与注意力输出目标错位",
             "structural_change": "把独立 Q/K 局部选择替换为受预算约束的联合离散坐标搜索，并以注意力输出损失接受或回退候选。",
             "evidence": "v0_softmax_aware_qk 的 300 例结果只改变 Attention 路径，Attention MSE 相对 v0_hessian_repair 降低约 1.210%。",
@@ -1526,6 +2072,8 @@ def seed(queue: dict[str, Any], config: dict[str, Any]) -> None:
             "suffix": "activation_whitened_linear_blocks",
             "focus": "linear",
             "family": "activation_whitened_linear_blocks",
+            "search_mode": "exploit",
+            "root_cause": "Linear 中 ΔXWᵀ 与 XΔWᵀ 沿激活协方差主方向被放大，独立量化两侧无法控制交叉项。",
             "hypothesis": "在保持矩阵乘等价的互逆变换中显式压平激活协方差，再做块量化，可降低高相关通道主导的 Linear 输出误差",
             "structural_change": "依据校准二阶矩构造受 HiF4 分组约束的可逆预条件，再在变换域联合量化权重与激活。",
             "evidence": "v0_alternating_joint_fit 的 Linear MSE 相对 v0_hessian_repair 降低约 3.158%，表明联合建模两侧误差有效但仍可能受相关通道限制。",
@@ -1539,6 +2087,8 @@ def seed(queue: dict[str, Any], config: dict[str, Any]) -> None:
             "suffix": "error_budgeted_hierarchy",
             "focus": "format",
             "family": "error_budgeted_hif4_hierarchy",
+            "search_mode": "explore",
+            "root_cause": "同一 64/8/4 值层级中离群值与主体值争用离散共享尺度，使削顶和小值分辨率不足集中在少数高损失块。",
             "hypothesis": "把 LV2/LV3 的局部范围选择改为下游敏感度约束的层级误差预算，可减少少数高损失 case 的主导误差",
             "structural_change": "从零构造合法 HiF4 层级参数选择器，将每层离散决策写成受共享关系约束的误差预算分配。",
             "evidence": "现有保留版本均以聚合目标报告收益，尚未专门优化逐例负收益尾部与 HiF4 层级共享造成的误差集中。",
@@ -1547,9 +2097,60 @@ def seed(queue: dict[str, Any], config: dict[str, Any]) -> None:
             "falsification": "筛选阶段负收益 case 数未下降，或完整综合分不超过实现基线。",
             "base": "scratch",
         },
+        {
+            "based_on": "v0_softmax_aware_qk",
+            "suffix": "paired_qk_error_cancellation",
+            "focus": "attention",
+            "family": "paired_qk_error_cancellation",
+            "search_mode": "explore",
+            "root_cause": "Q 与 K 独立编码产生的 ΔQKᵀ、QΔKᵀ 和 ΔQΔKᵀ 在中心化 logit 空间可能同向叠加；单侧张量误差或单侧 Hessian 无法主动利用两侧误差抵消。",
+            "hypothesis": "联合选择成对的合法 Q/K 离散修复，使一阶和二阶 logit 误差在逐行去均值后相互抵消，可降低 Softmax 输入的有效扰动。",
+            "structural_change": "显式计算中心化 ΔQKᵀ+QΔKᵀ+ΔQΔKᵀ，并用有界成对匹配替代独立 Q/K repair 接受，从误差相关性而非各自幅值选择编码。",
+            "evidence": "v0_softmax_aware_qk 完整 300 例 Attention MSE 为 0.0003740420031498385，优于 v0_hessian_repair 的 0.0003786237067026048；精确 QK 展开说明剩余误差含独立选择未控制的交叉项。",
+            "evidence_strength": 0.72, "novelty": 0.86, "uncertainty": 0.70,
+            "expected_cost": 1.8, "target_metric": "attention_mse",
+            "falsification": "成对候选接受率接近零，或完整评测中心化 logit 代理下降但 Attention MSE 不低于 v0_softmax_aware_qk。",
+            "base": "based_on",
+        },
+        {
+            "based_on": "v0_softmax_aware_qk",
+            "suffix": "attention_weighted_value_transport",
+            "focus": "attention",
+            "family": "attention_weighted_value_transport",
+            "search_mode": "explore",
+            "root_cause": "V 的元素级量化误差只有经注意力矩阵 A 传播后的 AΔV 才影响输出；当前 V 编码没有区分 AᵀA 的高敏感方向与近零空间。",
+            "hypothesis": "用校准注意力矩阵诱导的 AᵀA 度量选择合法 V 层级参数，把离散误差迁移到低可见方向，可降低最终 Attention 输出误差。",
+            "structural_change": "从校准 Q/K 构造每头的注意力传输 Gram，并以 ||AΔV||² 而非 ||ΔV||² 驱动 V 的块级 scale/LV2/LV3 与 mant 候选选择，保留无收益回退。",
+            "evidence": "Attention 输出对固定 Q/K 下的 V 误差精确等于 AΔV；现有最优 v0_softmax_aware_qk 只改善 Q/K 曲率，V 路径仍沿用通用量化。",
+            "evidence_strength": 0.68, "novelty": 0.82, "uncertainty": 0.66,
+            "expected_cost": 1.5, "target_metric": "attention_mse",
+            "falsification": "AᵀA 加权候选与原编码等价或回退占绝大多数，或完整 Attention MSE/综合分不优于 v0_softmax_aware_qk。",
+            "base": "based_on",
+        },
+        {
+            "based_on": "v0_softmax_aware_qk",
+            "suffix": "softmax_trust_region_repair",
+            "focus": "attention",
+            "family": "softmax_trust_region_repair",
+            "search_mode": "exploit",
+            "root_cause": "v0 的局部 Softmax 曲率已带来正式正收益，但离散 repair 可能越出二阶近似可靠区域；缺少按头的真实校准输出门禁来拒绝代理失真的更新。",
+            "hypothesis": "保留已验证的 Softmax-aware 候选生成，在独立校准切分上用真实输出损失和中心化 logit 半径做按头信赖域接受，可稳定深化已有收益。",
+            "structural_change": "在 v0_softmax_aware_qk 的 Hessian repair 外增加校准数据分割、按头局部信赖域和精确 Attention 输出接受/回退；不扩大候选数量，不改变固定格式。",
+            "evidence": "v0_softmax_aware_qk 相对 v0_hessian_repair 将完整 Attention MSE 从 0.0003786237067026048 降至 0.0003740420031498385，证明 Softmax-aware Q/K 方向已有正式正证据。",
+            "evidence_strength": 0.86, "novelty": 0.62, "uncertainty": 0.48,
+            "expected_cost": 1.4, "target_metric": "attention_mse",
+            "falsification": "真实门禁几乎总回退，或完整 Attention MSE/综合分未超过 v0_softmax_aware_qk，或额外校准耗时超过预算。",
+            "base": "based_on",
+        },
     ]
+    added = 0
     for seed_item in seeds:
         registry = read_json(REGISTRY_PATH)
+        if any(
+            node.get("algorithm_family") == seed_item["family"]
+            for node in registry.get("versions", {}).values()
+        ):
+            continue
         version = next_version(seed_item["suffix"], registry)
         add_algorithm_task(
             queue, config, based_on=seed_item["based_on"], version=version,
@@ -1562,8 +2163,12 @@ def seed(queue: dict[str, Any], config: dict[str, Any]) -> None:
             expected_cost=seed_item["expected_cost"],
             target_metric=seed_item["target_metric"],
             falsification=seed_item["falsification"],
+            search_mode=seed_item["search_mode"],
+            root_cause=seed_item["root_cause"],
         )
+        added += 1
     rerank_queued_tasks(queue)
+    return added
 
 
 def backfill_completed(queue: dict[str, Any], config: dict[str, Any]) -> int:
@@ -1578,12 +2183,16 @@ def backfill_completed(queue: dict[str, Any], config: dict[str, Any]) -> int:
     added = 0
     for task in completed:
         node = registry["versions"].get(task["version"], {})
-        result_path = RUNS / str(task.get("run_id")) / "worker-result.json"
+        run_dir = RUNS / str(task.get("run_id"))
+        feedback_path = run_dir / "report-feedback.json"
+        legacy_path = run_dir / "worker-result.json"
+        result_path = feedback_path if feedback_path.is_file() else legacy_path
         if not result_path.is_file() or not node.get("metrics"):
             continue
-        worker = read_json(result_path).get("result") or {}
+        payload = read_json(result_path)
+        directions = payload if feedback_path.is_file() else payload.get("result") or {}
         added += enqueue_followups(
-            queue, config, task, worker, float(node["metrics"]["score"])
+            queue, config, task, directions, float(node["metrics"]["score"])
         )
         registry = read_json(REGISTRY_PATH)
     return added
@@ -1595,6 +2204,10 @@ def recover_queue() -> int:
     registry = read_json(REGISTRY_PATH)
     recovered = 0
     for task in queue["tasks"]:
+        task["search_mode"] = infer_search_mode(task)
+        task["root_cause"] = task.get("root_cause") or task.get(
+            "hypothesis", "unspecified root cause"
+        )
         error_text = str(task.get("error") or "").lower()
         infrastructure_failure = any(marker in error_text for marker in (
             "winerror 2", "系统找不到指定的文件", "createprocesswithlogonw",
@@ -1605,19 +2218,50 @@ def recover_queue() -> int:
         if task["status"] not in {"running", "environment_failed", "workflow_failed"} and not interrupted_failure:
             continue
         node = registry["versions"].get(task.get("version"), {})
+        if node:
+            node["search_mode"] = task.get("search_mode", infer_search_mode(task))
+            node["root_cause"] = task.get("root_cause", task.get("hypothesis"))
         report = SOLUTION_ROOT / task["version"] / "report.md"
         if node.get("metrics") and report.is_file():
             task["status"] = "completed"
             task["stage"] = "completed"
         elif (
-            task["status"] == "workflow_failed"
-            and task.get("run_id")
-            and (RUNS / str(task["run_id"]) / "evaluation-summary.json").is_file()
+            task.get("run_id")
+            and recoverable_record_checkpoint(
+                RUNS / str(task["run_id"]), task["version"]
+            )
+        ):
+            task.update(
+                status="queued", stage="queued",
+                resume_run_id=task["run_id"], resume_stage="recording",
+                error="recovered at registry-recording checkpoint",
+            )
+            if node and node.get("metrics") is None:
+                node["status"] = "draft"
+                node.pop("failure", None)
+        elif (
+            task.get("run_id")
+            and recoverable_report_checkpoint(RUNS / str(task["run_id"]))
         ):
             task.update(
                 status="queued", stage="queued",
                 resume_run_id=task["run_id"], resume_stage="reporting",
                 error="recovered at report checkpoint",
+            )
+            if node and node.get("metrics") is None:
+                node["status"] = "draft"
+                node.pop("failure", None)
+        elif (
+            task.get("run_id")
+            and recoverable_implementation_artifacts(
+                RUNS / str(task["run_id"]), task["version"]
+            )
+        ):
+            task.update(
+                status="queued", stage="queued",
+                resume_run_id=task["run_id"],
+                resume_stage="implementation_finalize",
+                error="recovered substantial implementation artifacts for finalization",
             )
             if node and node.get("metrics") is None:
                 node["status"] = "draft"
@@ -1666,6 +2310,15 @@ def doctor(*, deep: bool = False) -> int:
         "flat_registry": REGISTRY_PATH.is_file(),
         "v0_hessian_repair": (SOLUTION_ROOT / "v0_hessian_repair" / "solution.py").is_file(),
         "max_agents": int(config["max_agents"]) <= 6,
+        "search_mix_4_2": (
+            int(config.get("search_mix", {}).get("explore_slots", -1)) == 4
+            and int(config.get("search_mix", {}).get("exploit_slots", -1)) == 2
+        ),
+        "target_score": float(config.get("target_score", 0.0)) == 20000.0,
+        "isolated_codex_config": bool(
+            config.get("codex", {}).get("ignore_user_config")
+            and config.get("codex", {}).get("ephemeral")
+        ),
         "evaluation_dataset": (
             ROOT / config.get("evaluation_datasets_dir", "datasets/combined") / "linear.pt"
         ).is_file() and (
@@ -1720,7 +2373,9 @@ def main() -> int:
     enqueue.add_argument("--version", required=True)
     enqueue.add_argument("--focus", choices=("linear", "attention", "format", "combined"), required=True)
     enqueue.add_argument("--algorithm-family", required=True)
+    enqueue.add_argument("--search-mode", choices=("explore", "exploit"))
     enqueue.add_argument("--hypothesis", required=True)
+    enqueue.add_argument("--root-cause", default="")
     enqueue.add_argument("--implementation-base", choices=("based_on", "v0_hessian_repair", "scratch"), default="based_on")
     enqueue.add_argument("--structural-change", default="")
     enqueue.add_argument("--evidence", default="manual proposal")
@@ -1759,16 +2414,17 @@ def main() -> int:
         try:
             with exclusive_scheduler_lock():
                 queue = load_queue()
-                seed(queue, config)
+                added = seed(queue, config)
                 save_queue(queue)
         except SchedulerBusyError:
             print("scheduler is running; seed refused", file=sys.stderr)
             return 2
-        print("queued 3 complete algorithm tasks; 3 slots remain idle")
+        print(f"queued {added} new algorithm task(s); seed portfolio targets 4 explore + 2 exploit")
     elif args.command == "status":
-        queue = load_queue()
-        if rerank_queued_tasks(queue):
-            save_queue(queue)
+        # Status is intentionally read-only: a concurrent CLI query must never
+        # overwrite a scheduler update with an older queue snapshot.
+        queue = copy.deepcopy(load_queue())
+        rerank_queued_tasks(queue)
         if args.json:
             print(json.dumps(queue, ensure_ascii=False, indent=2))
         else:
@@ -1781,8 +2437,28 @@ def main() -> int:
             if args.explain:
                 experiments = load_experiments()["experiments"]
                 print(f"stagnation_length={stagnation_length(experiments)}")
-                pareto = read_json(PARETO_PATH) if PARETO_PATH.is_file() else refresh_pareto_archive()
+                pareto = (
+                    read_json(PARETO_PATH)
+                    if PARETO_PATH.is_file()
+                    else build_pareto_archive(read_json(REGISTRY_PATH))
+                )
                 print("pareto=" + ",".join(item["version"] for item in pareto.get("front", [])))
+                best_version, best_score = best_score_state(read_json(REGISTRY_PATH))
+                target_score = float(config["target_score"])
+                print(
+                    f"target={target_score:.6f} best={best_score:.6f} "
+                    f"best_version={best_version} "
+                    f"gap={max(0.0, target_score - best_score):.6f}"
+                )
+                mode_counts: dict[str, dict[str, int]] = {}
+                for task in queue["tasks"]:
+                    if task["status"] not in {"queued", "running"}:
+                        continue
+                    mode = infer_search_mode(task)
+                    mode_counts.setdefault(mode, {"queued": 0, "running": 0})[
+                        task["status"]
+                    ] += 1
+                print("search_mix=" + json.dumps(mode_counts, ensure_ascii=False))
                 pending = sorted(
                     (task for task in queue["tasks"] if task["status"] == "queued"),
                     key=lambda task: -float(task.get("priority", 0.0)),
@@ -1790,10 +2466,13 @@ def main() -> int:
                 for task in pending[:10]:
                     print(
                         f"{task['version']} priority={task['priority']:.6f} "
+                        f"mode={infer_search_mode(task)} "
                         + json.dumps(task.get("priority_components", {}), ensure_ascii=False)
                     )
     elif args.command == "audit":
-        metrics = refresh_process_metrics()
+        # Like status, audit is a pure snapshot calculation.  The scheduler is
+        # the sole writer of persistent process metrics during active runs.
+        metrics = build_process_metrics(load_experiments()["experiments"])
         if args.json:
             print(json.dumps(metrics, ensure_ascii=False, indent=2))
         else:
@@ -1815,6 +2494,10 @@ def main() -> int:
             print(
                 "non_evaluation_outcomes="
                 + json.dumps(metrics["non_evaluation_outcomes"], ensure_ascii=False)
+            )
+            print(
+                "search_mode_metrics="
+                + json.dumps(metrics.get("search_modes", {}), ensure_ascii=False)
             )
     elif args.command == "pause":
         STOP_PATH.write_text(now() + "\n", encoding="utf-8")
@@ -1861,6 +2544,8 @@ def main() -> int:
                     expected_cost=args.expected_cost,
                     target_metric=args.target_metric,
                     falsification=args.falsification,
+                    search_mode=args.search_mode,
+                    root_cause=args.root_cause,
                 )
                 save_queue(queue)
         except SchedulerBusyError:

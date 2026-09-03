@@ -12,6 +12,7 @@ from core.strategy import (  # noqa: E402
     build_pareto_archive,
     build_process_metrics,
     compact_research_context,
+    infer_search_mode,
     proposal_fingerprint,
     select_diverse_batch,
     stagnation_length,
@@ -149,6 +150,92 @@ class StrategyTest(unittest.TestCase):
             "attention", "linear", "format",
         })
         self.assertNotIn("a2", {task["task_id"] for task in selected})
+
+    def test_search_mode_inference_prefers_explicit_then_scratch(self) -> None:
+        self.assertEqual(infer_search_mode({"search_mode": "exploit", "novelty": 1}), "exploit")
+        self.assertEqual(infer_search_mode({"implementation_base": "scratch"}), "explore")
+        self.assertEqual(infer_search_mode({"novelty": 0.8}), "explore")
+        self.assertEqual(infer_search_mode({"novelty": 0.4}), "exploit")
+
+    def test_dispatch_enforces_four_explore_two_exploit_portfolio(self) -> None:
+        pending = [
+            {
+                "task_id": f"e{index}", "search_mode": "explore",
+                "focus": f"focus_e{index}", "algorithm_family": f"family_e{index}",
+                "priority": 20 - index,
+            }
+            for index in range(5)
+        ] + [
+            {
+                "task_id": f"x{index}", "search_mode": "exploit",
+                "focus": f"focus_x{index}", "algorithm_family": f"family_x{index}",
+                "priority": 10 - index,
+            }
+            for index in range(3)
+        ]
+        selected = select_diverse_batch(
+            pending, 6, explore_slots=4, exploit_slots=2,
+        )
+        modes = [infer_search_mode(task) for task in selected]
+        self.assertEqual(modes.count("explore"), 4)
+        self.assertEqual(modes.count("exploit"), 2)
+
+    def test_dispatch_quota_accounts_for_active_tasks(self) -> None:
+        active = [
+            {"search_mode": "explore"} for _ in range(3)
+        ] + [{"search_mode": "exploit"}]
+        pending = [
+            {"task_id": "e", "search_mode": "explore", "priority": 2},
+            {"task_id": "x", "search_mode": "exploit", "priority": 1},
+        ]
+        selected = select_diverse_batch(
+            pending, 2, active=active, explore_slots=4, exploit_slots=2,
+        )
+        self.assertEqual(
+            {infer_search_mode(task) for task in selected}, {"explore", "exploit"},
+        )
+
+    def test_dispatch_diversity_accounts_for_active_tasks(self) -> None:
+        active = [
+            {
+                "search_mode": "explore", "focus": f"e{index}",
+                "algorithm_family": f"ef{index}",
+            }
+            for index in range(4)
+        ] + [{
+            "search_mode": "exploit", "focus": "attention",
+            "algorithm_family": "same_family",
+        }]
+        pending = [
+            {
+                "task_id": "duplicate", "search_mode": "exploit",
+                "focus": "attention", "algorithm_family": "same_family",
+                "priority": 10,
+            },
+            {
+                "task_id": "diverse", "search_mode": "exploit",
+                "focus": "linear", "algorithm_family": "new_family",
+                "priority": 1,
+            },
+        ]
+        selected = select_diverse_batch(
+            pending, 1, active=active, explore_slots=4, exploit_slots=2,
+        )
+        self.assertEqual(selected[0]["task_id"], "diverse")
+
+    def test_dispatch_borrows_unused_exploit_capacity(self) -> None:
+        pending = [
+            {
+                "task_id": f"e{index}", "search_mode": "explore",
+                "priority": 10 - index,
+            }
+            for index in range(6)
+        ]
+        selected = select_diverse_batch(
+            pending, 6, explore_slots=4, exploit_slots=2,
+        )
+        self.assertEqual(len(selected), 6)
+        self.assertTrue(all(infer_search_mode(task) == "explore" for task in selected))
 
 
 if __name__ == "__main__":

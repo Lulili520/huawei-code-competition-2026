@@ -2,7 +2,9 @@
 
 ## 任务模型
 
-`.agent/runner.py` 最多并发 6 个本地 Codex Agent。每个 Agent 独立完成一个完整算法版本：问题分析与调研、`policy.md`、算法实现、最多三组内部超参数配置、结构审查、分级评测、`report.md` 和扁平版本账本登记。
+`.agent/runner.py` 使用固定 6 个本地 Codex Agent 槽位；候选充足时持续占满，空槽不等待同批任务结束。全局组合目标固定为 4 个 `explore`（探索新根因或跨算法族机制）和 2 个 `exploit`（沿已有正式正证据或 Pareto 分项优势深化）。正在运行的任务也计入 4:2 配额；某一角色暂时没有合法候选时，另一角色可以借用空槽，但 Runner 不得伪造任务或用纯调参凑数。
+
+每个 Agent 独立完成一个完整算法版本：问题分析与调研、`policy.md`、算法实现、最多三组内部超参数配置、结构审查、分级评测、`report.md` 和扁平版本账本登记。
 
 不存在单独的“发现 Agent”和“实现 Agent”。一个版本完成后立即按真实得分更新全局优先队列，无须等待同批任务结束。
 
@@ -34,6 +36,7 @@ Runner 启动任务时记录评测器、评分公式、配置、schema 与数据
 - 外部依据优先使用原始论文、标准和官方资料，记录标题、作者/机构、年份与直达链接。
 - 每项算法动作必须有完整闭环：`问题证据 → 理论依据 → 算法动作 → 目标指标 → 否证条件`。
 - 报告逐项把假设标记为 `结果支持`、`结果否证` 或 `证据不足`，不得从本地样例直接外推隐藏集。
+- 根因分析必须落到可观测的误差传播项，而不是只写“量化误差较大”：Linear 至少区分 `ΔXWᵀ`、`XΔWᵀ` 与 `ΔXΔWᵀ`；Attention 至少区分中心化 logits、Softmax Jacobian 敏感方向与 V 路径；格式方向至少区分 clipping 误差与离散分辨率误差。若现有数据不能分解某一项，应明确标记为待验证假设。
 
 ## 评分与优化重点
 
@@ -43,6 +46,7 @@ Runner 启动任务时记录评测器、评分公式、配置、schema 与数据
 - 任何候选选择算法都应记录候选接受率、回退次数和逐例指标。只有汇总 MSE、没有中间诊断的版本不得直接据此扩展同类复杂策略。
 - 评测器统一记录每类逐例得分的最小值、P10、中位数、P90、最大值、负收益 case 数与阶段耗时。含内部搜索的算法还应通过只读 `hif4_get_diagnostics()` 返回接受数、候选总数和回退次数。
 - 综合分仍是正式排序主指标；同时维护得分最大、两类 MSE 最小和耗时最小的 Pareto 非支配档案。Linear 专项、Attention 专项或速度版本可以成为后续实现基础，即使它不是综合最高分。
+- 自动停止阈值是完整 50 Linear + 250 Attention 正式评测得分 `20000`。compact 自检、60 例筛选分或估算分均不能触发停止；达到阈值后 Runner 停止新任务派发，并允许已经开始的原子任务安全收尾。
 
 ## 分级评测
 
@@ -54,13 +58,13 @@ Runner 启动任务时记录评测器、评分公式、配置、schema 与数据
 
 ## 扁平调度
 
-- `max_agents=6`，不存在每个版本最多三个子节点的约束。
-- 每个完成评测的 Agent 提出恰好 3 个结构性后续方向，方向进入全局候选池。
+- `max_agents=6`，全局目标组合为 4 个 `explore` + 2 个 `exploit`；配额按正在运行和本轮待派发任务合计，不是每个来源版本各自分配。不存在每个版本最多三个子节点的约束。
+- 每个 Agent 只能在完整正式评测与诊断完成后，由报告阶段提出恰好 3 个结构性后续方向：2 个 `explore`、1 个 `exploit`。实现阶段不得提前生成后续方向。方向进入全局候选池，不保证从本版本继续；被否证版本的 `exploit` 也可选择其他已评测 Pareto 版本作为 `based_on`。
 - 候选任务记录 `based_on`、算法族、目标问题、证据强度、新颖性、不确定性、预计成本、目标指标与否证条件。全局按“来源质量 + 证据 + 新颖性 + 不确定性 + 算法族历史收益 + 探索奖励 + 停滞转向奖励 - 成本 - 失败惩罚”动态重排；不再把来源版本总分直接当作静态优先级。
 - 空槽从全局优先队列直接补位；禁止用纯调参任务凑数。
-- 每次并发派发先覆盖不同 focus，再覆盖不同算法族，最后才按优先级补满剩余槽位，避免高相似候选同时占满 6 个 Agent。
+- 每次并发派发先满足 4:2 角色组合，再在每种角色内覆盖不同 focus 和算法族，最后才按优先级补满或借用剩余槽位，避免高相似候选同时占满 6 个 Agent。
 - 正式评测全局串行。Agent 在独立快照中工作，Runner 只导入目标数字版本文件，并独占写入 queue、versions 和正式结果。
-- Runner 持续迭代直到用户明确暂停或结束。
+- Runner 持续迭代，直到用户明确暂停/结束，或某个完整 300 例正式得分达到 `20000`。后者只停止新派发，不把仍在收尾的任务强行中断。
 
 ## 研究记忆与防止局部最优
 
@@ -75,12 +79,15 @@ Runner 启动任务时记录评测器、评分公式、配置、schema 与数据
 queued → running → isolated policy/implementation → structural review
        → at most 3 internal configs → serialized screening
        → top-2 serialized full evaluation
-       → report → flat registry record → completed
+       → report + 2 explore/1 exploit proposals
+       → flat registry record → completed
 ```
 
-失败任务保留日志。调度器意外终止后用 `recover` 将未完成的 `running` 任务重新排队。若完整评测已完成而报告阶段失败，`checkpoint.json` 允许只恢复报告与登记，不重复昂贵评测。`environment_failed`、`evaluation_timeout`、`workflow_failed` 与算法结构失败必须分开记录。
+失败任务保留日志。调度器意外终止后用 `recover` 恢复未完成任务：若实现目录已有足够产物，则进入 `implementation_finalize` 完成结构化输出与审查；若完整评测已完成而报告阶段失败，则依赖 `checkpoint.json` 只恢复报告、后续方向与登记，不重复昂贵评测。`environment_failed`、`evaluation_timeout`、`workflow_failed` 与算法结构失败必须分开记录。
 
 Runner 启动前必须通过 `codex --version`，并直接执行目标 Conda 环境内 Python 的绝对路径与 `--version`。正式评测不得再经过 `conda run` 包装层。Python/Codex/评测子进程统一强制 UTF-8。基础设施错误记为 `environment_failed`，不得写成算法失败或更新算法指标。
+
+每个 Codex 子进程必须使用 `--ignore-user-config --ephemeral` 隔离用户级 MCP、提示和会话状态，同时显式指定模型、角色对应 reasoning effort 与 service tier。保留内置 code-mode host；连续 600 秒没有 stdout/stderr 事件时按空闲超时终止并进入可恢复失败路径，避免外部插件或悬挂命令无限占槽。
 
 Windows 受限沙箱若触发 `CreateProcessWithLogonW 1385`，允许 Codex 使用 `danger-full-access`，但每个任务仍必须位于独立快照，共享状态仍由 Runner 独占写入。快照不复制 `datasets/` 和 `reference/`；Agent 禁止绕过快照自行访问根数据或执行正式评分。
 

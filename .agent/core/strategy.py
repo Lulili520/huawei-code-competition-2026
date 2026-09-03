@@ -26,6 +26,18 @@ def proposal_fingerprint(
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:20]
 
 
+def infer_search_mode(task: dict[str, Any]) -> str:
+    """Classify legacy proposals while preferring an explicit research role."""
+    explicit = str(task.get("search_mode", "")).lower()
+    if explicit in {"explore", "exploit"}:
+        return explicit
+    if task.get("implementation_base") == "scratch":
+        return "explore"
+    if float(task.get("novelty", 0.5)) >= 0.72:
+        return "explore"
+    return "exploit"
+
+
 def metrics_are_current(metrics: dict[str, Any] | None) -> bool:
     return bool(
         metrics
@@ -232,7 +244,8 @@ def compact_research_context(
         if item.get("status") in {"core", "active", "candidate"}
     ][:12]
     keep = (
-        "version", "algorithm_family", "focus", "baseline", "baseline_score",
+        "version", "algorithm_family", "focus", "search_mode", "root_cause",
+        "baseline", "baseline_score",
         "score", "score_delta", "linear_mse_delta", "attention_mse_delta",
         "seconds", "outcome", "failure", "takeaways", "hypothesis_outcomes",
     )
@@ -292,6 +305,26 @@ def build_process_metrics(experiments: list[dict[str, Any]]) -> dict[str, Any]:
         count = max(int(entry["evaluated"]), 1)
         entry["mean_score_delta"] = entry["score_delta_sum"] / count
         entry["positive_rate"] = entry["positive"] / count
+    search_modes: dict[str, dict[str, Any]] = {}
+    for item in experiments:
+        if item in references:
+            continue
+        mode = infer_search_mode(item)
+        entry = search_modes.setdefault(mode, {
+            "attempts": 0, "evaluated": 0, "positive": 0,
+            "score_delta_sum": 0.0, "seconds": 0.0,
+        })
+        entry["attempts"] += 1
+        if item.get("outcome") == "evaluated":
+            entry["evaluated"] += 1
+            delta = float(item.get("score_delta", 0.0))
+            entry["positive"] += delta > 0
+            entry["score_delta_sum"] += delta
+            entry["seconds"] += float(item.get("seconds") or 0.0)
+    for entry in search_modes.values():
+        count = max(int(entry["evaluated"]), 1)
+        entry["mean_score_delta"] = entry["score_delta_sum"] / count
+        entry["positive_rate"] = entry["positive"] / count
     return {
         "schema_version": 1,
         "reference_versions": len(references),
@@ -312,38 +345,83 @@ def build_process_metrics(experiments: list[dict[str, Any]]) -> dict[str, Any]:
         "stagnation_length": stagnation_length(experiments),
         "non_evaluation_outcomes": failures,
         "families": families,
+        "search_modes": search_modes,
     }
 
 
 def select_diverse_batch(
-    pending: list[dict[str, Any]], limit: int,
+    pending: list[dict[str, Any]], limit: int, *,
+    active: list[dict[str, Any]] | None = None,
+    explore_slots: int = 4, exploit_slots: int = 2,
 ) -> list[dict[str, Any]]:
-    """Cover target directions and algorithm families before filling by score."""
+    """Fill a global exploration/exploitation portfolio and diversify each side.
+
+    Unused capacity may be borrowed when one side lacks valid candidates.  The
+    scheduler never fabricates a weak task merely to fill a process slot.
+    """
+    if limit <= 0:
+        return []
+    if explore_slots < 0 or exploit_slots < 0 or explore_slots + exploit_slots < 1:
+        raise ValueError("invalid exploration/exploitation slot configuration")
     ordered = sorted(
         pending,
         key=lambda task: (-float(task.get("priority", 0.0)), task.get("created_at", "")),
     )
+    active = active or []
+    active_explore = sum(infer_search_mode(task) == "explore" for task in active)
+    active_exploit = sum(infer_search_mode(task) == "exploit" for task in active)
+    need_explore = max(0, explore_slots - active_explore)
+    need_exploit = max(0, exploit_slots - active_exploit)
+    total_need = need_explore + need_exploit
+    if total_need:
+        explore_quota = min(
+            need_explore,
+            int(round(limit * need_explore / total_need)),
+        )
+        exploit_quota = min(need_exploit, limit - explore_quota)
+        while explore_quota + exploit_quota < min(limit, total_need):
+            if explore_quota < need_explore:
+                explore_quota += 1
+            elif exploit_quota < need_exploit:
+                exploit_quota += 1
+            else:
+                break
+    else:
+        explore_quota = exploit_quota = 0
+
     selected: list[dict[str, Any]] = []
     selected_ids: set[str] = set()
 
-    def add_best_per(field: str) -> None:
-        seen: set[str] = set()
-        for task in ordered:
-            value = str(task.get(field, "unknown"))
+    def take_diverse(pool: list[dict[str, Any]], quota: int) -> None:
+        start = len(selected)
+        for field in ("focus", "algorithm_family"):
+            seen = {
+                str(task.get(field, "unknown")) for task in [*active, *selected]
+            }
+            for task in pool:
+                value = str(task.get(field, "unknown"))
+                task_id = str(task.get("task_id", ""))
+                if value in seen or task_id in selected_ids or len(selected) - start >= quota:
+                    continue
+                seen.add(value)
+                selected.append(task)
+                selected_ids.add(task_id)
+        for task in pool:
+            if len(selected) - start >= quota:
+                break
             task_id = str(task.get("task_id", ""))
-            if value in seen or task_id in selected_ids or len(selected) >= limit:
-                continue
-            seen.add(value)
-            selected.append(task)
-            selected_ids.add(task_id)
+            if task_id not in selected_ids:
+                selected.append(task)
+                selected_ids.add(task_id)
 
-    add_best_per("focus")
-    add_best_per("algorithm_family")
-    for task in ordered:
-        if len(selected) >= limit:
-            break
-        task_id = str(task.get("task_id", ""))
-        if task_id not in selected_ids:
-            selected.append(task)
-            selected_ids.add(task_id)
+    take_diverse(
+        [task for task in ordered if infer_search_mode(task) == "explore"],
+        explore_quota,
+    )
+    take_diverse(
+        [task for task in ordered if infer_search_mode(task) == "exploit"],
+        exploit_quota,
+    )
+    # Borrow only after the intended mix has been honored as far as possible.
+    take_diverse(ordered, limit - len(selected))
     return selected
