@@ -8,6 +8,22 @@
   },
   "front": [
     {
+      "version": "v22_reciprocal_consumer_stack",
+      "algorithm_family": "reciprocal_transform_consumer_weighted_discrete_repair",
+      "score": 21673.257105856967,
+      "linear_mse": 0.004031384951498092,
+      "attention_mse": 0.00023155507926627506,
+      "seconds": 1142.3838615007699
+    },
+    {
+      "version": "v6_softmax_trust_region_repair",
+      "algorithm_family": "softmax_trust_region_repair",
+      "score": 16559.315496760442,
+      "linear_mse": 0.005876365662724178,
+      "attention_mse": 0.00037548714921267724,
+      "seconds": 557.2493703998625
+    },
+    {
       "version": "v0_softmax_aware_qk",
       "algorithm_family": "softmax_aware_qk",
       "score": 16498.457890098867,
@@ -33,10 +49,10 @@
     }
   ],
   "champions": {
-    "score": "v0_softmax_aware_qk",
-    "linear_mse": "v0_alternating_joint_fit",
-    "attention_mse": "v0_softmax_aware_qk",
+    "score": "v22_reciprocal_consumer_stack",
+    "linear_mse": "v22_reciprocal_consumer_stack",
+    "attention_mse": "v22_reciprocal_consumer_stack",
     "seconds": "v0_hessian_repair"
   },
-  "updated_at": "2026-09-03T09:41:03.920276+00:00"
+  "updated_at": "2026-09-04T07:13:53.210100+00:00"
 }

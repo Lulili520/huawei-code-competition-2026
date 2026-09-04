@@ -4,6 +4,7 @@ from __future__ import annotations
 LINEAR_SCORE_WEIGHT = 1.0
 ATTENTION_SCORE_WEIGHT = 5.0
 PERCENTAGE_POINTS = 100.0
+SCORE_SCALE_CASES = 300
 
 
 def weighted_total_score(
@@ -18,8 +19,7 @@ def weighted_total_score(
         LINEAR_SCORE_WEIGHT * linear_mean
         + ATTENTION_SCORE_WEIGHT * attention_mean
     ) / (LINEAR_SCORE_WEIGHT + ATTENTION_SCORE_WEIGHT)
-    # The task document defines the final score as the sum of each case's
-    # MSE-improvement percentage, so ratios must be converted to percentage
-    # points. With 50 Linear and 250 Attention cases, this is exactly the
-    # direct sum over all 300 case percentages.
-    return PERCENTAGE_POINTS * (len(linear_scores) + len(attention_scores)) * weighted_mean
+    # The formal dataset contains 50 Linear and 250 Attention cases. Weighting
+    # the two category means 1:5 and multiplying by 300 is algebraically the
+    # same as summing all 300 per-case improvement ratios.
+    return PERCENTAGE_POINTS * SCORE_SCALE_CASES * weighted_mean

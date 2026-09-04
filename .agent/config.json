@@ -2,15 +2,18 @@
   "schema_version": 1,
   "max_agents": 6,
   "target_score": 20000.0,
+  "continue_after_target": true,
   "directions_per_version": 3,
   "max_hyperparameter_configs": 3,
   "conda_env": "huawei_competition_2026",
   "evaluation_python": "D:\\Miniconda3\\envs\\huawei_competition_2026\\python.exe",
   "worker_timeout_seconds": 3600,
-  "agent_idle_timeout_seconds": 600,
-  "evaluation_timeout_seconds": 1800,
-  "screening_timeout_seconds": 900,
+  "agent_idle_timeout_seconds": 1800,
+  "agent_terminal_grace_seconds": 30,
+  "evaluation_timeout_seconds": 7200,
+  "screening_timeout_seconds": 1800,
   "evaluation_datasets_dir": "datasets/combined",
+  "reference_cache_enabled": true,
   "environment_launch_retries": 3,
   "codex": {
     "command": "C:\\Users\\Administrator\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
@@ -65,7 +68,8 @@
     "datasets/combined/manifest.json",
     "solution/v0_hessian_repair/solution.py",
     "solution/v0_softmax_aware_qk/solution.py",
-    "solution/v0_alternating_joint_fit/solution.py"
+    "solution/v0_alternating_joint_fit/solution.py",
+    "solution/v22_reciprocal_consumer_stack/solution.py"
   ],
   "fixed_evaluation_cases": {
     "linear": 50,

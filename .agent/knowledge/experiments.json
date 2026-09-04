@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": 4,
+  "revision": 61,
   "experiments": [
     {
       "version": "v0_hessian_repair",
@@ -19,7 +19,10 @@
       "takeaways": [
         "六个接口和合法 HiF4 输出格式可作为稳定起点。",
         "根版本没有消融对照，不能把总效果归因于单个模块。"
-      ]
+      ],
+      "linear_case_count": 50,
+      "attention_case_count": 250,
+      "evaluation_profile": "F300"
     },
     {
       "version": "v0_softmax_aware_qk",
@@ -40,7 +43,10 @@
       "takeaways": [
         "Attention 候选应按 softmax 输出影响评估，而不只比较 Q/K 张量重构误差。",
         "精度提升伴随更长耗时，平台时限仍需单独验证。"
-      ]
+      ],
+      "linear_case_count": 50,
+      "attention_case_count": 250,
+      "evaluation_profile": "F300"
     },
     {
       "version": "v0_alternating_joint_fit",
@@ -61,37 +67,953 @@
       "takeaways": [
         "Linear 中激活量化和权重量化是耦合问题，交替更新优于只固定一侧拟合。",
         "Linear 专项收益未超过 Attention 路线对综合分的贡献。"
-      ]
+      ],
+      "linear_case_count": 50,
+      "attention_case_count": 250,
+      "evaluation_profile": "F300"
     },
     {
       "version": "v1_discrete_attention_output_search",
       "algorithm_family": "discrete_attention_output_search",
       "focus": "attention",
+      "search_mode": "explore",
+      "root_cause": "独立最小化 Q/K 张量误差忽略逐行平移不变性和 Softmax Jacobian，局部 MSE 与最终 Attention 输出损失错位。",
       "baseline": "v0_softmax_aware_qk",
-      "outcome": "workflow_failed",
-      "failure": "Codex step exceeded 3600 seconds",
+      "outcome": "failed",
+      "failure": "structural review rejected: 结构算法通过：solution.py:1458-1470、1769-2103、2143-2162 实现校准期 Q/K 联合离散坐标搜索、输出损失接受及运行期模式组装，不是单独调整系数或候选数量。; NVFP4 边界通过：solution.py:95-106 按输入值乘对应 scale、默认 16 值分组并恢复末维；全部调用点均未覆盖 blk_size。policy.md:15-17、86-88 也明确保持输入语义不变。; 证据链不通过：policy.md:31-32 只列出未中心化的 ΔQKᵀ、QΔKᵀ、ΔQΔKᵀ，并笼统提到 Softmax Jacobian，没有按规范明确分解“逐行中心化 logits 误差/行常数零敏感方向 → Jacobian 敏感方向 → V 路径误差”。此外，policy.md:67、81-82 所用“按候选重构差异排序坐标”缺少说明该排序为何能识别 attention-output 敏感坐标的理论连接；policy.md:55-59 的表格只为硬预算给出成本依据，没有为这一排序动作建立完整因果闭环。policy.md:7-13 也未按 hif4-policy/SKILL.md:75 明确声明任务 search_mode=explore。; 写入范围通过：指定目录实际仅含 policy.md 和 solution.py、没有 trials；审查时 git status 为空，未发现目标目录外写入。; 复杂度通过：policy.md:81-84 给出 O(C·B·M²·r·Tq·Tk·d) 上界、校准期与动态期成本及回退条件；solution.py:60-65 将 C≤2、Tq≤32、Tk≤64、B≤8、M=3 固化。; 诊断通过：solution.py:67-92 的 hif4_get_diagnostics() 仅返回标量字典副本；solution.py:2071-2089、2099-2103 记录候选总数、接受数、回滚数、模式分布和搜索回退。; check failed: evidence_chain",
       "run_id": "a7e9aa5f0ab6-1788433413",
-      "completed_at": "2026-09-03T12:03:34.094032+00:00"
-    },
-    {
-      "version": "v3_error_budgeted_hierarchy",
-      "algorithm_family": "error_budgeted_hif4_hierarchy",
-      "focus": "format",
-      "baseline": "v0_hessian_repair",
-      "outcome": "workflow_failed",
-      "failure": "Codex step exceeded 3600 seconds",
-      "run_id": "45ab19b5c2fb-1788433413",
-      "completed_at": "2026-09-03T12:03:34.103514+00:00"
+      "completed_at": "2026-09-03T12:38:11.771962+00:00"
     },
     {
       "version": "v2_activation_whitened_linear_blocks",
       "algorithm_family": "activation_whitened_linear_blocks",
       "focus": "linear",
+      "search_mode": "exploit",
+      "root_cause": "Linear 中 ΔXWᵀ 与 XΔWᵀ 沿激活协方差主方向被放大，独立量化两侧无法控制交叉项。",
       "baseline": "v0_alternating_joint_fit",
       "outcome": "workflow_failed",
-      "failure": "report agent did not produce report.md",
+      "failure": "Codex step produced no events for 600 seconds",
       "run_id": "8ffd498d29a1-1788433413",
-      "completed_at": "2026-09-03T12:07:39.505322+00:00"
+      "completed_at": "2026-09-03T12:43:23.858304+00:00"
+    },
+    {
+      "version": "v4_paired_qk_error_cancellation",
+      "algorithm_family": "paired_qk_error_cancellation",
+      "focus": "attention",
+      "search_mode": "explore",
+      "root_cause": "Q 与 K 独立编码产生的 ΔQKᵀ、QΔKᵀ 和 ΔQΔKᵀ 在中心化 logit 空间可能同向叠加；单侧张量误差或单侧 Hessian 无法主动利用两侧误差抵消。",
+      "baseline": "v0_softmax_aware_qk",
+      "outcome": "workflow_failed",
+      "failure": "Codex step produced no events for 600 seconds",
+      "run_id": "c2d63c4f90a8-1788438788",
+      "completed_at": "2026-09-03T12:53:26.454043+00:00"
+    },
+    {
+      "version": "v3_error_budgeted_hierarchy",
+      "algorithm_family": "error_budgeted_hif4_hierarchy",
+      "focus": "format",
+      "search_mode": "explore",
+      "root_cause": "同一 64/8/4 值层级中离群值与主体值争用离散共享尺度，使削顶和小值分辨率不足集中在少数高损失块。",
+      "baseline": "v0_hessian_repair",
+      "baseline_score": 16383.511407092246,
+      "score": 13218.655367994921,
+      "score_delta": -3164.8560390973253,
+      "linear_mse": 0.008849314795602033,
+      "attention_mse": 0.00048590641982445274,
+      "linear_mse_delta": 0.0029729491328778545,
+      "attention_mse_delta": 0.00010728271312184792,
+      "seconds": 639.6066026994959,
+      "outcome": "evaluated",
+      "new_global_best": false,
+      "best_before": "v0_softmax_aware_qk",
+      "run_id": "45ab19b5c2fb-1788433413",
+      "completed_at": "2026-09-03T13:15:22.611925+00:00",
+      "hypothesis_outcomes": [
+        {
+          "hypothesis": "层级误差预算能够降低少数块对输出损失的主导程度，并使完整综合分超过 v0_hessian_repair。",
+          "status": "结果否证",
+          "evidence": "conservative 与 tail_guard 的正式得分分别为 13218.655367994921 和 13123.281984274457，均低于基准 16383.511407092246，触发 policy 的明确否证条件。"
+        },
+        {
+          "hypothesis": "放宽预算会增加层级尾部改选，并可修复极端 Attention 负收益样例。",
+          "status": "结果支持",
+          "evidence": "epsilon 从 1/256 放宽至 1/16 后，正式改选率由 0.0414472706821172% 升至 0.415136200602742%；Attention minimum 从 -12.413506626430895 升至 9.375600139226707，负收益数由 1 降至 0，且回退均为 0。"
+        },
+        {
+          "hypothesis": "当前 Q/K 对侧二阶能量代理能够改善 Attention 输出。",
+          "status": "结果否证",
+          "evidence": "选中配置 Attention MSE 为 0.00048590641982445274，高于基准 0.0003786237067026048；总分同时下降 3164.85603909733。"
+        },
+        {
+          "hypothesis": "Linear 对角敏感度已分别有效约束 ΔXWᵀ、XΔWᵀ，且 ΔXΔWᵀ 可忽略。",
+          "status": "证据不足",
+          "evidence": "Linear MSE 从基准 0.005876365662724178 退化至 0.008849314795602033，但 runner 未提供三个传播项的独立诊断，无法归因。"
+        },
+        {
+          "hypothesis": "HiF4 层级共享中的 clipping 或 resolution 是高损失块的主导根因。",
+          "status": "证据不足",
+          "evidence": "诊断记录了层级改选，却没有 clipping 数、clipping SSE、舍入 SSE 或块到 case 的贡献映射，无法区分两类格式误差。"
+        },
+        {
+          "hypothesis": "有界 O(CN) 搜索在当前实现中具有相对基准的实际耗时优势。",
+          "status": "结果否证",
+          "evidence": "conservative 耗时 639.6066026994959 秒，比 v0_hessian_repair 的 514.8921692995355 秒多 124.71443339996 秒。"
+        }
+      ],
+      "takeaways": [
+        {
+          "kind": "positive",
+          "statement": "层级预算能够操纵极端 Attention 尾部，但该能力不等同于综合精度收益。",
+          "evidence": "tail_guard 将正式 Attention 负收益数从 1 降至 0、minimum 提高 21.7891067656576 个百分点，但正式得分比 conservative 低 95.3733837204636。"
+        },
+        {
+          "kind": "positive",
+          "statement": "诊断足以确认算法结构真实运行且退化不是回退主导。",
+          "evidence": "conservative 完成 376944000 次尾部决策并发生 156233 次改选；搜索、重要度、状态、校准和非有限值回退全部为 0。"
+        },
+        {
+          "kind": "negative",
+          "statement": "当前局部最坏子组加权 SSE 不是最终输出损失的充分代理。",
+          "evidence": "tail_guard 虽消除唯一 Attention 负收益 case，但 P10 从 25.6349576418718 降至 24.645639075045114、mean 从 38.60836655173826 降至 38.253935894635404，两项 MSE及总分也均劣于 conservative。"
+        },
+        {
+          "kind": "negative",
+          "statement": "从零替换 Hessian 与跨块修复链造成显著整体退化，不能视为相对基准的算法收益。",
+          "evidence": "选中配置相对基准的 Linear MSE 增加 50.5916293081675%，Attention MSE 增加 28.3349170225399%，总分减少 3164.85603909733。"
+        },
+        {
+          "kind": "boundary",
+          "statement": "60 例筛选只能决定晋级，不能确定完整评测最优配置。",
+          "evidence": "tail_guard 在筛选中领先 conservative 4.02582736765271 分，完整 300 例却落后 95.3733837204636 分。"
+        },
+        {
+          "kind": "boundary",
+          "statement": "本轮不能推断隐藏集、其他层或其他模型上的有效性。",
+          "evidence": "全部数值证据仅来自固定本地 50 Linear + 250 Attention 正式数据，且缺少 Linear、Attention及格式误差的机理分项。"
+        }
+      ],
+      "screening": {
+        "enabled": true,
+        "evaluated_configs": 3,
+        "promoted_configs": 2,
+        "selected": "conservative",
+        "screening_ranking": [
+          "tail_guard",
+          "conservative",
+          "main"
+        ],
+        "formal_ranking": [
+          "conservative",
+          "tail_guard"
+        ],
+        "winner_agreement": false
+      },
+      "linear_case_count": 50,
+      "attention_case_count": 250,
+      "evaluation_profile": "F300"
+    },
+    {
+      "version": "v5_attention_weighted_value_transport",
+      "algorithm_family": "attention_weighted_value_transport",
+      "focus": "attention",
+      "search_mode": "explore",
+      "root_cause": "V 的元素级量化误差只有经注意力矩阵 A 传播后的 AΔV 才影响输出；当前 V 编码没有区分 AᵀA 的高敏感方向与近零空间。",
+      "baseline": "v0_softmax_aware_qk",
+      "baseline_score": 16498.457890098867,
+      "score": 16437.038237769313,
+      "score_delta": -61.41965232955408,
+      "linear_mse": 0.005876365662724178,
+      "attention_mse": 0.00038069532048770263,
+      "linear_mse_delta": 0.0,
+      "attention_mse_delta": 6.653317337864122e-06,
+      "seconds": 534.1898585008457,
+      "outcome": "evaluated",
+      "new_global_best": false,
+      "best_before": "v0_softmax_aware_qk",
+      "run_id": "4ec32352b42d-1788438788",
+      "completed_at": "2026-09-03T13:23:22.078889+00:00",
+      "hypothesis_outcomes": [
+        {
+          "hypothesis": "校准期低秩 AᵀA 代理驱动的 V 合法候选能降低正式 Attention MSE并提高综合分。",
+          "status": "结果否证",
+          "evidence": "main 的 Attention MSE 为 0.00038069532048770263，高于 v0_softmax_aware_qk 的 0.0003740420031498385；总分低 61.41965232955408。"
+        },
+        {
+          "hypothesis": "transport 搜索实际参与候选选择，而非被回退完全旁路。",
+          "status": "结果支持",
+          "evidence": "50/50 次 transport 校准成功；100 次 V 搜索评估 8,372,224 个候选，1,168/1,168 组被接受，无 no-gain、nonfinite 或 state 回退。"
+        },
+        {
+          "hypothesis": "该版本保持 Linear 路径结果不变。",
+          "status": "结果支持",
+          "evidence": "main 与比较基准的 Linear MSE 均为 0.005876365662724178。"
+        },
+        {
+          "hypothesis": "AᵀA 代理的非对角项确实把 V 离散误差迁移到了正式样例的低可见方向。",
+          "status": "结果否证",
+          "evidence": "代理接受率达到 100%，但正式 Attention MSE 增加 6.653317337864122e-06（1.7787620860320486%），说明当前代理与正式输出未对齐。"
+        },
+        {
+          "hypothesis": "clipping 与离散分辨率中哪一项主导了本次退化。",
+          "status": "证据不足",
+          "evidence": "Runner 未提供 clipping 次数/SSE、舍入 SSE 或二者的逐组输出贡献。"
+        }
+      ],
+      "takeaways": [
+        {
+          "kind": "positive",
+          "statement": "V transport 结构确实执行，且退化不是非有限值或无收益回退造成。",
+          "evidence": "transport_calibration_successes=50、v_searches=100、v_candidate_total=8372224、v_group_accepted/v_group_total=1168/1168，state/nonfinite/no_gain 回退均为 0。"
+        },
+        {
+          "kind": "negative",
+          "statement": "当前校准低秩 transport 代理与正式 Attention 输出损失错位。",
+          "evidence": "代理组接受率为 1.0，但相对 v0_softmax_aware_qk，Attention MSE 增加 6.653317337864122e-06，综合分下降 61.41965232955408。"
+        },
+        {
+          "kind": "boundary",
+          "statement": "序列长度精确匹配限制使 transport 只覆盖 40% 的 V 动态调用。",
+          "evidence": "250 次 v_dynamic_calls 中仅 100 次 v_searches，另有 150 次 v_fallback_shape，占 60%。"
+        },
+        {
+          "kind": "positive",
+          "statement": "结构搜索没有带来总耗时惩罚，但精度退化使其不能作为精度 Pareto 起点。",
+          "evidence": "main 用时 534.1898585008457 秒，比基准 626.4658948006108 秒少 92.27603629976511 秒（14.729618494097652%）；同时 Attention MSE与总分均劣于基准。"
+        },
+        {
+          "kind": "boundary",
+          "statement": "本轮无法判断相对基准的逐例退化是否集中于少数样例。",
+          "evidence": "Runner 给出 main 的分布，但没有与 v0_softmax_aware_qk 配对的逐例差值；只能确认 main 相对标准编码器两类 negative_count 均为 0。"
+        }
+      ],
+      "screening": {
+        "enabled": false,
+        "evaluated_configs": 0,
+        "promoted_configs": 1,
+        "selected": "main",
+        "screening_ranking": [],
+        "formal_ranking": [
+          "main"
+        ],
+        "winner_agreement": null
+      },
+      "linear_case_count": 50,
+      "attention_case_count": 250,
+      "evaluation_profile": "F300"
+    },
+    {
+      "version": "v6_softmax_trust_region_repair",
+      "algorithm_family": "softmax_trust_region_repair",
+      "focus": "attention",
+      "search_mode": "exploit",
+      "root_cause": "v0 的局部 Softmax 曲率已带来正式正收益，但离散 repair 可能越出二阶近似可靠区域；缺少按头的真实校准输出门禁来拒绝代理失真的更新。",
+      "baseline": "v0_softmax_aware_qk",
+      "baseline_score": 16498.457890098867,
+      "score": 16559.315496760442,
+      "score_delta": 60.85760666157512,
+      "linear_mse": 0.005876365662724178,
+      "attention_mse": 0.00037548714921267724,
+      "linear_mse_delta": 0.0,
+      "attention_mse_delta": 1.4451460628387282e-06,
+      "seconds": 557.2493703998625,
+      "outcome": "evaluated",
+      "new_global_best": true,
+      "best_before": "v0_softmax_aware_qk",
+      "run_id": "38dbe3679d12-1788438788",
+      "completed_at": "2026-09-03T13:34:38.933410+00:00",
+      "hypothesis_outcomes": [
+        {
+          "hypothesis": "独立 validation 的真实输出门禁会拒绝局部代理失真的 repair head，而非被回退旁路。",
+          "status": "结果支持",
+          "evidence": "50 次 trust gate 全部成功；Q/KV 分别有 57/2 个 head 因输出损失回退，370,516 个 proxy-accepted block 被 head mask 拒绝；gate、dynamic-state、repair-state fallback 均为 0。"
+        },
+        {
+          "hypothesis": "repair 越出中心化 logit 半径是本轮主要可拒绝根因。",
+          "status": "结果否证",
+          "evidence": "Q 与 KV 的 radius_rejected 均为 0；全部 59 个 head 回退均由 loss_rejected 产生。"
+        },
+        {
+          "hypothesis": "双门禁会同时降低完整 Attention MSE并提高最终得分。",
+          "status": "结果否证",
+          "evidence": "最终得分从 16498.457890098867 升至 16559.315496760442，但 Attention MSE从 0.0003740420031498385 升至 0.00037548714921267724，增加 1.44514606283873e-06（0.3863592994%）。"
+        },
+        {
+          "hypothesis": "新增 Attention 结构保持 Linear 路径不变。",
+          "status": "结果支持",
+          "evidence": "main 与 v0_softmax_aware_qk 的 Linear MSE均为 0.005876365662724178。"
+        },
+        {
+          "hypothesis": "新增校准门禁的端到端耗时在本轮不可接受。",
+          "status": "结果否证",
+          "evidence": "main 耗时 557.2493703998625 秒，比 v0_softmax_aware_qk 的 626.4658948006108 秒少 69.2165244007483 秒；该单次测量不能外推平台时限。"
+        },
+        {
+          "hypothesis": "三个 Linear 传播项、Attention 高阶/Jacobian/V 分项或 clipping/resolution 中的某一项主导正式结果。",
+          "status": "证据不足",
+          "evidence": "Runner 未提供这些误差项的独立诊断、同切分消融或与基准配对的逐例差值，不能由汇总分数反推机理。"
+        }
+      ],
+      "takeaways": [
+        {
+          "kind": "positive",
+          "statement": "独立切分的按头精确输出门禁可在六接口约束下稳定运行并实际改变 repair。",
+          "evidence": "50/50 个 calibration group 使用 sample split，无校准或状态失败回退；head mask 拒绝 370,516 个原代理已接受 block。"
+        },
+        {
+          "kind": "positive",
+          "statement": "整个版本结构取得正式得分正收益，且未扰动 Linear 路径。",
+          "evidence": "相对 v0_softmax_aware_qk，得分增加 60.8576066615751，Linear MSE差值为 0；本轮无 trial，因此该收益不能归为内部调参。"
+        },
+        {
+          "kind": "negative",
+          "statement": "当前 aggregate heldout SSE 门禁没有实现目标 Attention MSE改善。",
+          "evidence": "正式 Attention MSE增加 1.44514606283873e-06（0.3863592994%），尽管 59 个 head 被 heldout loss gate 拒绝。"
+        },
+        {
+          "kind": "negative",
+          "statement": "半径 1.0 在本轮没有选择作用，不支持继续围绕半径做纯参数搜索。",
+          "evidence": "被考虑的 1,032 个 Q heads和 267 个 KV heads中，radius rejection 均为 0。"
+        },
+        {
+          "kind": "boundary",
+          "statement": "无法判断相对来源版本的分数增益是否集中于少数样例。",
+          "evidence": "main 相对标准编码器的 Linear/Attention negative_count 均为 0，且 mean 接近 median；但 Runner 没有提供 main 与 v0_softmax_aware_qk 的配对逐例差值。"
+        },
+        {
+          "kind": "boundary",
+          "statement": "不能把总分提高等同于汇总 Attention MSE下降。",
+          "evidence": "同一次正式评测比较中，总分提高 60.8576066615751，而 Attention MSE反向增加 0.3863592994%；两者采用不同聚合口径。"
+        }
+      ],
+      "screening": {
+        "enabled": false,
+        "evaluated_configs": 0,
+        "promoted_configs": 1,
+        "selected": "main",
+        "screening_ranking": [],
+        "formal_ranking": [
+          "main"
+        ],
+        "winner_agreement": null
+      },
+      "linear_case_count": 50,
+      "attention_case_count": 250,
+      "evaluation_profile": "F300"
+    },
+    {
+      "version": "v11_linear_cross_term_repair",
+      "algorithm_family": "explicit_linear_cross_term_alternating_repair",
+      "focus": "linear",
+      "search_mode": "explore",
+      "root_cause": "Linear 输出误差由 ΔXWᵀ、XΔWᵀ 与 ΔXΔWᵀ 共同组成；现有正收益交替拟合说明两侧耦合重要，但裁剪记忆没有独立验证交叉项是否限制进一步改善。",
+      "baseline": "v0_alternating_joint_fit",
+      "outcome": "failed",
+      "failure": "structural review rejected: 结构算法通过：policy.md 第 54–64 行定义显式三项残差与合法 HiF4 块坐标修复；solution.py 的 `_cross_term_coordinate_repair`（第 1254–1435 行）按合成输出 SSE 逐块验收激活和权重候选，不是单纯调参。; 固定解码通过：solution.py 的 `dequantize_nvfp4`（第 92–103 行）保持每 16 值共享输入 scale、相乘后恢复末维；policy.md 第 13–15、76–78 行明确禁止改变 E2M1/E4M3 输入语义或重估 scale。; 证据链通过：policy.md 第 19–38 行区分已验证事实、误差三项分解与待验证假设；第 42–44 行的 GPTQ、SmoothQuant、Coordinate Descent 原始资料可核验且支持对应机制；第 54–58 行给出三条完整因果闭环，第 96、100–103 行给出正式指标否证条件。; 写入范围通过：被审版本的实现产物位于 `solution/v11_linear_cross_term_repair/`；其中仅有 policy.md、solution.py 和目录内字节码缓存，没有 trials，也未发现候选实现写入其他 solution 版本。; 复杂度边界不通过：policy.md 第 72 行仅给出 `O(KROC)` 时间和 `O(RO)` 残差存储，却遗漏 solution.py 第 1282–1287 行对全部输出特征的两份完整权重反量化，以及第 1360 行对整套 HiF4 参数的克隆。若完整输出特征数为 F，新增时间和峰值存储至少还含 `O(FC)`，并含第 1333 行的 `O(RC)` 激活副本；当前声明不是实际实现的完整上界。; 诊断计划通过：solution.py 第 60–89 行提供只读快照接口；第 1268–1434 行记录搜索数、候选数、接受数、无收益保留、分类回退、三项能量和分解误差，读取不会清零或改变状态。; check failed: complexity_bound",
+      "run_id": "034d1cf97629-1788441802",
+      "completed_at": "2026-09-03T13:35:22.051227+00:00"
+    },
+    {
+      "version": "v8_term_attributed_linear_joint_repair",
+      "algorithm_family": "term_attributed_linear_joint_repair",
+      "focus": "linear",
+      "search_mode": "explore",
+      "root_cause": "独立对角敏感度忽略 ΔXWᵀ、XΔWᵀ 的跨通道抵消以及 ΔXΔWᵀ 耦合，可能使张量级预算与真实 Linear 输出残差错位。",
+      "baseline": "v0_alternating_joint_fit",
+      "outcome": "workflow_failed",
+      "failure": "Codex step produced no events for 600 seconds",
+      "run_id": "9f5da8dde283-1788441322",
+      "completed_at": "2026-09-03T13:38:20.979093+00:00"
+    },
+    {
+      "version": "v10_multishape_robust_transport",
+      "algorithm_family": "distributionally_robust_multishape_value_transport",
+      "focus": "attention",
+      "search_mode": "explore",
+      "root_cause": "当前 V transport 只在序列长度与单一校准状态精确匹配时运行，150/250 次调用因 shape 回退；兼容调用的代理又全部接受却使正式 Attention MSE 退化，说明单一拼接低秩 Gram 的覆盖和泛化均不足。",
+      "baseline": "v0_softmax_aware_qk",
+      "outcome": "workflow_failed",
+      "failure": "Codex step produced no events for 600 seconds",
+      "run_id": "01d76f12323e-1788441802",
+      "completed_at": "2026-09-03T13:43:05.308034+00:00"
+    },
+    {
+      "version": "v9_softmax_vpath_joint_acceptance",
+      "algorithm_family": "softmax_vpath_joint_acceptance",
+      "focus": "attention",
+      "search_mode": "exploit",
+      "root_cause": "已验证的 Q/K 输出感知路线未联合优化注意力概率之后直接进入输出的 V 误差路径，剩余 Attention 误差可能由 Q/K Jacobian 敏感方向与 V 路径共同决定。",
+      "baseline": "v0_softmax_aware_qk",
+      "outcome": "workflow_failed",
+      "failure": "Codex step produced no events for 600 seconds",
+      "run_id": "c8db4fb6928f-1788441322",
+      "completed_at": "2026-09-03T13:45:00.454355+00:00"
+    },
+    {
+      "version": "v14_clipping_resolution_router",
+      "algorithm_family": "clipping_resolution_attribution_router",
+      "focus": "format",
+      "search_mode": "explore",
+      "root_cause": "现有格式策略没有分别观测 clipping 与离散 resolution 误差；v3 的统一层级预算显著退化，无法判断是哪类格式误差或错误代理造成。",
+      "baseline": "v0_hessian_repair",
+      "outcome": "failed",
+      "failure": "structural review rejected: 结构算法通过：policy.md“核心算法”（第55–57行）定义三棵合法层级树、clipping/resolution 归因路由及 heldout 门禁；solution.py 的 `_best_tree`、`_encode_hif4`（第254–375行）和 Linear/Attention 校准门禁（第398–506、669–793行）均有对应实现，不是单独调节系数或候选数。; 固定解码通过：`dequantize_nvfp4`（solution.py 第101–113行）强制 16 值分组，直接执行输入值乘对应 scale 并恢复末维；未重估或交换输入 scale。; 证据链通过：policy.md 第19–31行明确区分已验证事实、理论推导和待验证假设，第46–51行给出四条“证据→理论→动作→指标→否证”闭环，第35–38行列出标题、作者、年份和直达链接；其中 [HiF4](https://arxiv.org/abs/2602.11287) 与 [AdaRound](https://proceedings.mlr.press/v119/nagel20a.html) 的原始资料直接支持相应格式层级与数据相关舍入论断。; 写入范围通过：候选产物仅位于 `solution/v14_clipping_resolution_router/`；实际算法文件为 policy.md、solution.py，无 trials，额外字节码缓存也仍在目标目录内。审查前后两文件 SHA-256 未变化。仓库状态中的 `.agent/knowledge/*` 与 `.agent/versions.json` 属于目标快照外的 Runner 共享状态，未归为候选实现写入。; 复杂度边界不通过：policy.md 第68行声称 Linear 校准峰值为 `O(OC+HO)`、Attention 为 `O(BH·Tq·Tk+N)`，但 `_decode_linear_activations` 先保存全部解码样本，随后第431–434行又分别 `torch.cat` fit/heldout，实际还需随全部校准行增长的 `O((F+H)C)` 空间；`_decode_attention_samples`（第588–603行）同样长期保存全部解码 Q/K/V。声明的峰值上界没有覆盖这些副本。; 诊断能力不通过：policy.md 第86行承诺记录“两专家路由与接受数”和 heldout 回退；实现仅有总 `routed_blocks_accepted/rejected`，没有分别记录 clipping 专家与 resolution 专家的接受数或输出贡献，无法把正式退化归因到具体专家。并且 `_gate`（第378–383行）拒绝候选时只增加 `heldout_gate_rejects`；Linear 第468、483行及 Attention 第785–786行发生的实际普通树回退均未增加 `heldout_gate_fallbacks`，因此该回退计数不完整。; check failed: complexity_bound; check failed: diagnostic_plan",
+      "run_id": "6fb517c12da4-1788442701",
+      "completed_at": "2026-09-03T13:51:49.333981+00:00"
+    },
+    {
+      "version": "v7_joint_clipping_resolution_dp",
+      "algorithm_family": "joint_clipping_resolution_dp",
+      "focus": "format",
+      "search_mode": "explore",
+      "root_cause": "当前局部尾部代理混合了削顶误差与离散分辨率误差，且 scratch 实现移除了基准修复链，无法判断格式根因或预算本身的独立贡献。",
+      "baseline": "v0_hessian_repair",
+      "outcome": "workflow_failed",
+      "failure": "Codex step produced no events for 600 seconds",
+      "run_id": "57fc5fa6f49a-1788441322",
+      "completed_at": "2026-09-03T14:00:43.579762+00:00"
+    },
+    {
+      "version": "v15_robust_score_aligned_gate",
+      "algorithm_family": "distributionally_robust_softmax_gate",
+      "focus": "combined",
+      "search_mode": "exploit",
+      "root_cause": "当前 gate 聚合未标准化的 validation 输出 SSE，而正式总分聚合逐例相对改善；本轮出现总分提高但汇总 Attention MSE退化，说明接受目标与正式多指标口径存在错位。",
+      "baseline": "v6_softmax_trust_region_repair",
+      "outcome": "workflow_failed",
+      "failure": "Codex step produced no events for 600 seconds",
+      "run_id": "6854bb0504a8-1788442478",
+      "completed_at": "2026-09-03T14:01:16.392403+00:00"
+    },
+    {
+      "version": "v13_exact_v_residual_gate",
+      "algorithm_family": "sequence_invariant_exact_v_output_repair",
+      "focus": "attention",
+      "search_mode": "explore",
+      "root_cause": "Attention 输出误差中的 PΔV 与 ΔPΔV 尚未分解；v5 的局部 AᵀA transport 代理虽 100% 接受，却因序列长度匹配仅覆盖 40% 动态调用，并使正式 Attention MSE恶化。",
+      "baseline": "v0_softmax_aware_qk",
+      "baseline_score": 16498.457890098867,
+      "score": 16311.740699392427,
+      "score_delta": -186.7171907064403,
+      "linear_mse": 0.005876365662724178,
+      "attention_mse": 0.00038088046944568474,
+      "linear_mse_delta": 0.0,
+      "attention_mse_delta": 6.8384662958462326e-06,
+      "seconds": 781.3195019001141,
+      "outcome": "evaluated",
+      "new_global_best": false,
+      "best_before": "v6_softmax_trust_region_repair",
+      "run_id": "579c4222d5df-1788442522",
+      "completed_at": "2026-09-03T14:08:07.893223+00:00",
+      "hypothesis_outcomes": [
+        {
+          "hypothesis": "fit-only exact Attention 输出目标和独立 heldout gate 能实际运行并产生选择。",
+          "status": "结果支持",
+          "evidence": "50/50 次 calibration、50 次 V fit 和 50 次 gate 均成功，fit/gate failure 均为 0；3,910,464 个 fit 候选使 68/584 个 block 改选，gate 接受 1/267 个 head。"
+        },
+        {
+          "hypothesis": "token 轴无关的 head-block 状态能消除序列长度 shape 回退。",
+          "status": "结果支持",
+          "evidence": "250 次动态 V 调用中 v_fallback_shape=0；v5 曾有 150/250 次 shape 回退。"
+        },
+        {
+          "hypothesis": "有效 V repair 覆盖率至少达到 90%。",
+          "status": "结果否证",
+          "evidence": "v_effective_calls/v_dynamic_calls=5/250=2%，另有 245 次 v_fallback_no_policy，远低于 90% 验收线。"
+        },
+        {
+          "hypothesis": "exact V residual repair 能降低完整 Attention MSE并提高最终得分。",
+          "status": "结果否证",
+          "evidence": "Attention MSE为0.00038088046944568474，比v0_softmax_aware_qk的0.0003740420031498385高6.83846629584623e-06；得分低186.71719070644。"
+        },
+        {
+          "hypothesis": "新增 Attention 结构保持 Linear 路径结果不变。",
+          "status": "结果支持",
+          "evidence": "main与v0_softmax_aware_qk的Linear MSE均为0.005876365662724178。"
+        },
+        {
+          "hypothesis": "heldout接受的V repair能在正式样例上保持同方向收益。",
+          "status": "证据不足",
+          "evidence": "gate接受1个head，但没有V-off正式消融、逐head正式贡献或相对基准的配对逐例差值；整个版本退化不能因果归于该head。"
+        }
+      ],
+      "takeaways": [
+        {
+          "kind": "positive",
+          "statement": "跨长度状态表示和exact门禁链可稳定执行。",
+          "evidence": "v_fallback_shape=0/250；50/50 calibration、50/50 fit及50/50 gate成功，state、shape、nonfinite failure均为0。"
+        },
+        {
+          "kind": "negative",
+          "statement": "无shape回退不等于有效repair覆盖，本结构未取得正式精度收益。",
+          "evidence": "有效调用仅5/250=2%，245次无policy回退；Attention MSE恶化1.82826159582586%，得分下降186.71719070644。"
+        },
+        {
+          "kind": "negative",
+          "statement": "当前fit block加whole-head gate产生过度稀疏的策略，不应仅靠调stride、factor或margin继续扩展。",
+          "evidence": "68/584个fit block改选，但267个heldout head仅接受1个，接受率0.374531835205993%。"
+        },
+        {
+          "kind": "boundary",
+          "statement": "本轮不能隔离V repair、Q/K calibration切分及Attention三条传播路径的各自贡献。",
+          "evidence": "实现以200个fit样例重建Q/K状态且没有V-off消融；Runner未提供ΔPV、PΔV、ΔPΔV或相对基准的配对逐例诊断。"
+        },
+        {
+          "kind": "boundary",
+          "statement": "无法判断相对基准的退化是否集中于少数样例。",
+          "evidence": "main相对标准编码器的Attention mean为49.66529860154356、median为49.15068667332073、负收益1/250，但没有main相对v0_softmax_aware_qk的配对逐例差值。"
+        }
+      ],
+      "screening": {
+        "enabled": false,
+        "evaluated_configs": 0,
+        "promoted_configs": 1,
+        "selected": "main",
+        "screening_ranking": [],
+        "formal_ranking": [
+          "main"
+        ],
+        "winner_agreement": null
+      },
+      "linear_case_count": 50,
+      "attention_case_count": 250,
+      "evaluation_profile": "F300"
+    },
+    {
+      "version": "v12_joint_centered_qk_repair",
+      "algorithm_family": "joint_centered_qk_curvature_repair",
+      "focus": "attention",
+      "search_mode": "exploit",
+      "root_cause": "v0_softmax_aware_qk 已证明输出敏感 Q/K 曲率有正式正收益，但其 Q、K 修复仍分角色处理，未显式联合中心化 logits 中的 ΔQKᵀ、QΔKᵀ 与 ΔQΔKᵀ。",
+      "baseline": "v0_softmax_aware_qk",
+      "baseline_score": 16498.457890098867,
+      "score": 16497.398371183193,
+      "score_delta": -1.0595189156738343,
+      "linear_mse": 0.005876365662724178,
+      "attention_mse": 0.00037414249824197616,
+      "linear_mse_delta": 0.0,
+      "attention_mse_delta": 1.004950921376451e-07,
+      "seconds": 816.354621199891,
+      "outcome": "evaluated",
+      "new_global_best": false,
+      "best_before": "v6_softmax_trust_region_repair",
+      "run_id": "47efd49f1c57-1788442985",
+      "completed_at": "2026-09-03T14:24:50.612869+00:00",
+      "hypothesis_outcomes": [
+        {
+          "hypothesis": "联合中心化 Q/K pair 层能同时降低完整 Attention MSE并提高最终得分。",
+          "status": "结果否证",
+          "evidence": "相对 v0_softmax_aware_qk，Attention MSE从0.0003740420031498385升至0.00037414249824197616，增加1.00495092137645e-07（0.0268673281%）；得分从16498.457890098867降至16497.398371183193，下降1.05951891567383。"
+        },
+        {
+          "hypothesis": "联合搜索、独立 exact gate 和共享动态 mask 会真实执行并同时改变 Q/K，而非被异常回退旁路。",
+          "status": "结果支持",
+          "evidence": "50/50次联合校准成功，584/584个block双侧可变，154/584通过proxy；exact gate接受49/113、拒绝64/113个KV head；动态Q/K分别发生96,942/21,393次pair override，相关异常回退均为0。"
+        },
+        {
+          "hypothesis": "单次切分的 aggregate heldout exact SSE改善能够泛化到正式 Attention 指标。",
+          "status": "结果否证",
+          "evidence": "heldout exact SSE从30,811.45224380493降至30,790.19800376892，改善0.0689816237%，但正式Attention MSE增加0.0268673281%，最终得分下降1.05951891567383。"
+        },
+        {
+          "hypothesis": "新增 Attention 联合结构保持 Linear 路径不变。",
+          "status": "结果支持",
+          "evidence": "main与v0_softmax_aware_qk的Linear MSE均为0.005876365662724178。"
+        },
+        {
+          "hypothesis": "联合候选不会多数被exact gate回退，且端到端成本不会显著增加。",
+          "status": "结果否证",
+          "evidence": "exact gate拒绝64/113个被考虑KV head（56.6371681416%）；正式耗时由626.4658948006108秒增至816.354621199891秒，增加189.88872639928秒（30.3111036012%）。"
+        },
+        {
+          "hypothesis": "中心化Q/K三项、Softmax Jacobian/V路径或clipping/resolution中的某一项主导正式结果。",
+          "status": "证据不足",
+          "evidence": "Runner虽记录Q/K/cross原始能量和格式分项SSE，但没有pair-off、单路径或格式开关的配对正式消融，也没有相对基准的逐例贡献，无法由汇总指标反推主导机理。"
+        }
+      ],
+      "takeaways": [
+        {
+          "kind": "positive",
+          "statement": "联合Q/K校准链可以在六接口约束内稳定执行并真正改变动态输出。",
+          "evidence": "50/50次联合校准成功、所有校准及动态异常回退为0；动态pair-enabled为1,338,208个block，真实pair override为118,335个block。"
+        },
+        {
+          "kind": "negative",
+          "statement": "当前联合结构没有深化来源版本的正式收益，且性能代价明显。",
+          "evidence": "相对v0_softmax_aware_qk，Attention MSE增加1.00495092137645e-07、总分下降1.05951891567383，耗时增加189.88872639928秒（30.3111036012%）。"
+        },
+        {
+          "kind": "negative",
+          "statement": "aggregate heldout exact SSE下降不是正式泛化的充分证据。",
+          "evidence": "heldout SSE改善21.2542400360107（0.0689816237%），正式Attention MSE与得分却同时退化。"
+        },
+        {
+          "kind": "boundary",
+          "statement": "有proposal、启用pair mask和真正覆盖来源选择是不同层级，成本判断应使用最后一级。",
+          "evidence": "proxy proposals为154/584 block，exact接受49/113 head，dynamic pair-enabled占14.5882352941%，但true override仅占全部repair block的1.2900078490%。"
+        },
+        {
+          "kind": "boundary",
+          "statement": "无法判断相对来源版本的退化是否集中于少数正式样例。",
+          "evidence": "main相对标准编码器的Attention negative_count为0、P10为34.66670607546442、median为49.264943110536294；Runner没有提供main与v0_softmax_aware_qk的配对逐例差值。"
+        },
+        {
+          "kind": "boundary",
+          "statement": "格式诊断只能提出根因候选，尚不能作因果归因。",
+          "evidence": "resolution SSE为5,093,709.277680397，占两类格式SSE的91.7606346875%；clipping SSE为457,374.03274810314，但没有格式策略开关或输出贡献消融。"
+        }
+      ],
+      "screening": {
+        "enabled": false,
+        "evaluated_configs": 0,
+        "promoted_configs": 1,
+        "selected": "main",
+        "screening_ranking": [],
+        "formal_ranking": [
+          "main"
+        ],
+        "winner_agreement": null
+      },
+      "linear_case_count": 50,
+      "attention_case_count": 250,
+      "evaluation_profile": "F300"
+    },
+    {
+      "version": "v16_centered_logit_mode_joint_repair",
+      "algorithm_family": "centered_logit_mode_joint_qk_repair",
+      "focus": "attention",
+      "search_mode": "explore",
+      "root_cause": "v13只处理PΔV与ΔPΔV，未处理由中心化ΔQKᵀ、QΔKᵀ、ΔQΔKᵀ经Softmax Jacobian形成的ΔPV；V路线正式退化使该遗漏值得独立检验。",
+      "baseline": "v0_softmax_aware_qk",
+      "outcome": "workflow_failed",
+      "failure": "Codex step produced no events for 600 seconds",
+      "run_id": "a35696513bff-1788444487",
+      "completed_at": "2026-09-03T14:28:21.549003+00:00"
+    },
+    {
+      "version": "v19_crossfit_normalized_gate",
+      "algorithm_family": "cross_fitted_normalized_attention_gate",
+      "focus": "attention",
+      "search_mode": "explore",
+      "root_cause": "单次切分的aggregate绝对SSE可能被样例规模和高能量样例主导，无法检测校准选择的跨样例稳定性，也未对齐正式逐例相对得分。",
+      "baseline": "v0_softmax_aware_qk",
+      "outcome": "workflow_failed",
+      "failure": "Codex step produced no events for 600 seconds",
+      "run_id": "8481526b5b41-1788445490",
+      "completed_at": "2026-09-03T14:41:48.752954+00:00"
+    },
+    {
+      "version": "v17_counterfactual_clip_resolution_router",
+      "algorithm_family": "counterfactual_clipping_resolution_router",
+      "focus": "format",
+      "search_mode": "explore",
+      "root_cause": "合法HiF4候选同时混合clipping与离散resolution误差；v3正式显著退化，而v13仍无法判断三个V因子的失败属于哪一类格式误差。",
+      "baseline": "v0_hessian_repair",
+      "outcome": "workflow_failed",
+      "failure": "Codex step produced no events for 600 seconds",
+      "run_id": "b29c4933249c-1788444487",
+      "completed_at": "2026-09-03T15:29:21.424012+00:00"
+    },
+    {
+      "version": "v22_reciprocal_consumer_stack",
+      "algorithm_family": "reciprocal_transform_consumer_weighted_discrete_repair",
+      "focus": "combined",
+      "search_mode": "explore",
+      "root_cause": "既有方案主要在独立张量或局部代理上修复，未统一利用浮点等价变换、Softmax行平移零空间与最终消费者风险，导致合法HiF4码字没有优先分配到输出敏感方向。",
+      "baseline": "v6_softmax_trust_region_repair",
+      "baseline_score": 16559.315496760442,
+      "score": 21673.257105856967,
+      "score_delta": 5113.941609096524,
+      "linear_mse": 0.004031384951498092,
+      "attention_mse": 0.00023155507926627506,
+      "linear_mse_delta": -0.0018449807112260862,
+      "attention_mse_delta": -0.00014393206994640218,
+      "seconds": 1142.3838615007699,
+      "outcome": "evaluated",
+      "new_global_best": true,
+      "best_before": "v6_softmax_trust_region_repair",
+      "run_id": "adopt-v22-reciprocal-consumer-stack",
+      "completed_at": "2026-09-04T02:19:04.955180+00:00",
+      "hypothesis_outcomes": [
+        {
+          "hypothesis": "互逆等价变换、Softmax零空间处理与消费者加权离散修复的组合可同时改善Linear和Attention输出",
+          "status": "结果支持",
+          "evidence": "完整50+250例中Linear MSE降低31.3966%，Attention MSE降低38.3321%，综合分较v6增加5113.941609096524。"
+        },
+        {
+          "hypothesis": "公共谱基、K gauge与V各级修复分别独立贡献正收益",
+          "status": "证据不足",
+          "evidence": "本轮只复现了main组合配置，且实现没有模块接受率、回退次数或配对正式消融。"
+        },
+        {
+          "hypothesis": "高精度组合可越过本地完整300例目标20000",
+          "status": "结果支持",
+          "evidence": "Runner正式结果为21673.257105856967，样例计数严格为50个Linear和250个Attention。"
+        }
+      ],
+      "takeaways": [
+        {
+          "kind": "positive",
+          "statement": "先使用浮点严格等价的逆缩放或Q/K互逆变换，再进入离散量化搜索。",
+          "evidence": "组合版本相对v6同时降低两类MSE并提高5113.941609096524分；严格等价结构不会在量化前改变目标计算。"
+        },
+        {
+          "kind": "positive",
+          "statement": "量化候选应按最终消费者风险而非单独张量重建误差排序。",
+          "evidence": "Linear输出Hessian、中心化Attention与P^TP加权V修复组合在完整300例上取得21673.257105856967分。"
+        },
+        {
+          "kind": "negative",
+          "statement": "不能从组合总分反推每个内部修复模块都有效。",
+          "evidence": "实现没有hif4_get_diagnostics且本轮未做模块关闭消融，独立因果贡献不可识别。"
+        },
+        {
+          "kind": "boundary",
+          "statement": "超过20000后应在精度约束下优化运行成本，而不是继续堆叠搜索。",
+          "evidence": "本版本耗时1142.3838615007699秒，是v6的2.0500倍；Attention动态阶段单独耗时642.32570909895秒。"
+        }
+      ],
+      "screening": {
+        "enabled": false,
+        "evaluated_configs": 0,
+        "promoted_configs": 1,
+        "selected": "main",
+        "screening_ranking": [],
+        "formal_ranking": [
+          "main"
+        ],
+        "winner_agreement": null
+      },
+      "linear_case_count": 50,
+      "attention_case_count": 250,
+      "evaluation_profile": "F300"
+    },
+    {
+      "version": "v26_global_error_budget_allocator",
+      "algorithm_family": "global_output_error_budget_allocator",
+      "focus": "combined",
+      "search_mode": "explore",
+      "root_cause": "当前每条路径在自己的局部循环内独立决定搜索深度和接受动作，没有考虑Attention权重是Linear五倍，也没有在不同模块之间竞争同一计算预算。",
+      "baseline": "v22_reciprocal_consumer_stack",
+      "outcome": "failed",
+      "failure": "structural review rejected: 结构策略成立：solution.py:181-254 实现三档多选择背包，:2256-2332 与 :3936-4062 构建 Linear、Q/K/V 输出收益曲线，:2172-2253 与 :7850-8008 按档执行并通过输出代理回退，不是单纯参数调整。; NVFP4 语义保持：solution.py:389-400 仍将末维按 blk_size=16 展开，使 E2M1 值逐组乘对应输入 E4M3 scale 后恢复末维；六个公开接口均经该函数解码。; 核心证据—动作—实现对应不完整：policy.md:54-60、:64-65、:75、:79 声称 Linear 与 Attention 共享总容量并按收益—成本进行全局资源转移，但实现分别在 solution.py:2311-2316 和 :4038-4043 调用两个独立分配器，容量被静态锁定为 2/10，未使用预算不能跨类别转移。因此实际机制不能验证“Linear、Q/K/V 在同一全局预算中竞争”的主要因果假设。; 成本侧也缺少闭环：policy.md:64 称生成 shape 成本曲线，但 solution.py:131-136 仅使用与 shape、实测阶段耗时及候选操作数无关的固定成本元组；policy.md:101-109 未给出这些模块成本和共同影子价格的理论或项目证据。收益曲线有真实输出 pilot，成本曲线却没有相应证据或实现。; 范围检查通过：指定版本目录实际仅含 policy.md 与 solution.py，无 trials；solution.py 只导入 typing/torch，静态检查未发现文件、网络或子进程写入路径。; 复杂度边界与诊断满足：policy.md:91-93 给出 MCKP O(MBT)、M≤3、T=3、容量2/10及Attention pilot最多32 token的上界；solution.py:139-178、:2184-2252、:4037-4060、:7866-8007记录候选、接受/拒绝、预算、档位和回退，hif4_get_diagnostics()返回计数字典副本且不改变状态。; check failed: evidence_chain",
+      "run_id": "250f37338d0b-1788491423",
+      "completed_at": "2026-09-04T04:46:29.357967+00:00"
+    },
+    {
+      "version": "v28_krylov_value_solver",
+      "algorithm_family": "krylov_value_consumer_solver",
+      "focus": "attention",
+      "search_mode": "explore",
+      "root_cause": "v22的V路径依次运行链修复、全局直流和rank-4低秩修复，这些方向都来自同一个P^TP消费者算子，却被分开近似和重复扫描码字。",
+      "baseline": "v22_reciprocal_consumer_stack",
+      "outcome": "workflow_failed",
+      "failure": "report agent must propose exactly two explore and one exploit direction",
+      "run_id": "df410bed6196-1788491424",
+      "completed_at": "2026-09-04T04:46:52.376246+00:00"
+    },
+    {
+      "version": "v30_format_dual_path_gate",
+      "algorithm_family": "consumer_gated_format_error_decomposition",
+      "focus": "format",
+      "search_mode": "explore",
+      "root_cause": "现有结果无法区分clipping与离散分辨率误差；v27只在固定scale移动码字且实际移动为0，因而没有验证格式瓶颈。",
+      "baseline": "v22_reciprocal_consumer_stack",
+      "outcome": "failed",
+      "failure": "structural review rejected: 结构策略成立：`solution.py:156-370` 实现联合层级/外层 scale 的 clipping 分支和固定层级的 Gram 误差反馈 resolution 分支；`solution.py:391-427` 使用独立 exact gate，不属于纯参数调整。; NVFP4 边界合格：`solution.py:97-109` 固定按输入 E2M1 数值乘对应 scale、强制 16 值分组并恢复最后一维，未重估或重排输入 scale。; 证据定位不完整：`policy.md:27-29` 的 v27、v12、v25、v3 事实，以及 `policy.md:64` 的 v6/v25 记录，没有给出文件、函数、run/config 或正式评测记录定位；而 `policy.md:62-64` 的核心因果链直接依赖这些事实。; 实现与证据链存在偏差：`policy.md:45,63,70,111` 承诺选择“相邻合法码”，但 `_resolution_encode()` 在 `solution.py:330-355` 对误差反馈后的 `working` 直接舍入并裁剪到完整 0–7 码域，没有约束为原值或 base 码的相邻上下两个码。因此引用理论、声明的算法动作和实际实现没有完全闭环。; 外部资料本身可核验并与一般机制相符：[HiF4](https://arxiv.org/abs/2602.11287) 支持 64 元素三级尺度格式，[AdaRound](https://proceedings.mlr.press/v119/nagel20a.html) 支持消费者损失驱动的非最近舍入，[GPTQ](https://arxiv.org/abs/2210.17323) 支持基于逆 Hessian 的顺序误差补偿；问题在于项目证据定位和实现对应关系，而非这些引用不存在。; 复杂度上界不完整：`_inverse_gram()` 在 `solution.py:292-306` 对每个 64×64 block 执行矩阵求逆，但 `policy.md:92` 未计入相应的 `O((C/64)·64³)` 校准成本；同一段还使用未定义维度符号的 `O(ROC)`，因此没有给出完整、明确的校准期上界。; 诊断计划合格：`solution.py:26-85` 定义路径候选、接受、拒绝、有效调用及各类回退计数；`solution.py:92-94` 返回状态副本，不改变算法结果。; 配置与范围合格：两个 trial 与主文件仅 `solution.py:16` 的 `_MODE` 不同；目标目录实际只有 policy、主实现和两个 trial 文件，审查前后 SHA-256 未变化。; check failed: evidence_chain; check failed: complexity_bound",
+      "run_id": "e76e52be887a-1788496968",
+      "completed_at": "2026-09-04T04:57:13.493167+00:00"
+    },
+    {
+      "version": "v29_crossfit_exact_pair_search",
+      "algorithm_family": "crossfit_exact_softmax_pair_policy",
+      "focus": "attention",
+      "search_mode": "explore",
+      "root_cause": "当前Q、K候选由各自低秩二次风险分别生成，之后才联合计算exact Softmax输出；8/8组全部被gate拒绝，显示候选生成目标与联合输出目标错位。",
+      "baseline": "v27_softmax_quotient_solver",
+      "outcome": "failed",
+      "failure": "structural review rejected: 结构算法通过：`policy.md`“核心算法”及 `solution.py:3429-3793` 实现联合 Q/K 合法码字的 exact Softmax 输出搜索，`solution.py:3796-3872` 实现冻结策略应用；这是目标函数与候选选择结构的改变，不是纯参数调整。; 固定 NVFP4 解码通过：`solution.py:298-309` 保持每 16 个连续值与对应输入 scale 相乘并恢复末维；AST 对比确认其与 v27 相同，所有调用均使用默认 16 值分组。搜索只重写 HiF4 `sign/mant`，未重估输入 scale。; 证据链不通过：`policy.md:33,45,50` 声称在“未参与 fit”的 fold 上检查方向，但 `solution.py:3474,3521-3558` 固定使用 shard 0、1、2 构造 quotient factor，候选池又由该 factor 在 `solution.py:3580-3602` 产生；三个 gate `{0,3}`、`{1,4}`、`{2}`（`solution.py:127,3697-3713`）各自都包含一个已参与候选生成的 shard。因此没有任何真正未参与 fit 的 held-out fold，Stone 交叉验证依据与实现动作不对应。Gao–Pavel 的 [Softmax Jacobian 原文](https://arxiv.org/html/1704.00805)和 Stone 的[交叉验证论文](https://doi.org/10.1111/j.2517-6161.1974.tb00994.x)本身可核验，但不能支持当前存在数据泄漏的实现。; 证据定位另有缺口：`policy.md:12,28,50` 使用 v22、v0 和 v12 的精确正反例指标，却未标注文件或真实评测记录位置；这些数据实际分别位于 `solution/v22_reciprocal_consumer_stack/report.md:66-67`、`.agent/knowledge/experiments.json:28-35` 和 `.agent/knowledge/experiments.json:561-594`。; 写入范围通过：对 `../workspace-before.json` 的 SHA-256 清单复核显示，仅 `solution/v29_crossfit_exact_pair_search/policy.md` 与 `solution.py` 发生变化，无新增或删除文件；目标目录没有 `trials/`，源码也未发现文件写入调用。; 复杂度边界不通过：`policy.md:65` 只给出 exact 候选 Attention 的 `O(GCSH_gT_qT_kd)` 上界，却遗漏实际校准链中的逐 shard SVD（`solution.py:3532`）、Jacobian-V 到完整 `d×d` Gram 的构造（`solution.py:3545-3557`）以及经 `_attention_quotient_factor` 执行的 `d×d` 特征分解（`solution.py:3562-3568,3009-3038`）。因此声明并非完整校准时间上界。; 诊断计划通过：`solution.py:130-154` 定义候选、fold、接受、回退、有效覆盖、应用和饱和计数；相关路径在 `solution.py:3439-3792,3806-3871` 更新计数。`hif4_get_diagnostics()`（`solution.py:161-163`）返回新字典快照，读取不会清零或改变算法状态。; check failed: evidence_chain; check failed: complexity_bound",
+      "run_id": "f3bef842245b-1788496968",
+      "completed_at": "2026-09-04T04:59:20.658745+00:00"
+    },
+    {
+      "version": "v36_dual_format_lattice_repair",
+      "algorithm_family": "format_decomposed_legal_lattice_repair",
+      "focus": "format",
+      "search_mode": "explore",
+      "root_cause": "校准基础编码的resolution SSE为1466.228858947754，占clipping与resolution合计的90.7175923958%；当前路由只决定是否调用既有深修复，没有针对两类格式误差采用不同合法码动作。",
+      "baseline": "v23_budgeted_repair_router",
+      "outcome": "failed",
+      "failure": "structural review rejected: 结构策略成立：policy“核心算法”及 solution.py:210-275 实现固定层级相邻格点 resolution 专家和层级重分配 clipping 专家，不是单纯调参。; 固定 NVFP4 语义成立：solution.py:72-83 强制 16 值分组，直接乘输入 scale 后恢复最后一维，未重估或重排 scale。; 证据定位不完整：policy.md:23-24、49 使用 v22/v3/v30/v6 的“Runner 注入记录”，但未给出文件、函数、run/config 标识；其中 v6 的门禁与 MSE 冲突甚至没有精确指标，不能形成可核验的项目证据链。外部 HiF4、AdaRound 和 GPTQ 引用本身可核验且支持对应的一般理论。; 核心门禁存在实现对应缺口：policy.md:43、78 承诺不重叠 fit/heldout；但 solution.py:310-316 在 rows==1 时令 hold=fit，既不独立也不回退，违背独立留出门禁定义。; 诊断不完整：Linear 在 solution.py:356-364 搜索 9 个 activation/weight 组合，却只在 368-371 记录最终 accepted/rejected，没有 linear 候选总数、各专家 fit/heldout delta 或该路径的回退计数；solution.py:511 的候选总数仅覆盖 Attention，无法计算 Linear 候选接受率。; 复杂度边界基本充分：policy.md:63 给出 K=33、S=6、chunk 峰值、校准期与动态期渐近开销；实现中的固定候选集见 solution.py:193-207、233-250。; 写入范围通过：指定目录仅含 policy.md 和 solution.py，无 trials；solution.py 仅导入计算依赖且不存在文件写入调用。; check failed: evidence_chain; check failed: diagnostic_plan",
+      "run_id": "7d33d5bf951e-1788498011",
+      "completed_at": "2026-09-04T05:13:22.999157+00:00"
+    },
+    {
+      "version": "v24_compiled_repair_schedule",
+      "algorithm_family": "calibration_compiled_repair_schedule",
+      "focus": "attention",
+      "search_mode": "exploit",
+      "root_cause": "v22在250个动态样例中重复运行相似的离散码字搜索与多阶段修复，已经在校准期得到的公共基底、Hessian和消费者结构没有完全转化为可直接执行的计划。",
+      "baseline": "v22_reciprocal_consumer_stack",
+      "outcome": "workflow_failed",
+      "failure": "Codex step produced no events for 1800 seconds",
+      "run_id": "e565311ef470-1788491424",
+      "completed_at": "2026-09-04T05:18:05.603983+00:00"
+    },
+    {
+      "version": "v42_joint_attention_tangent_gate",
+      "algorithm_family": "joint_attention_output_tangent_solver",
+      "focus": "attention",
+      "search_mode": "explore",
+      "root_cause": "现有边缘Q/K模型未联合覆盖中心化logits中的ΔQKᵀ、QΔKᵀ和ΔQΔKᵀ，也未使用完整Softmax Jacobian；V仍为单位阵且v33实际接受覆盖为0。",
+      "baseline": "v25_unified_consumer_solver",
+      "outcome": "failed",
+      "failure": "structural review rejected: 结构算法通过：policy.md“核心算法”及 solution.py:1109-1184、1234-1312 实现按 KV head 的 Q/K/V 七种非空 bundle 切空间选择与独立 heldout exact-output 门禁，不是纯参数调整。; NVFP4 边界通过：solution.py:124-137 强制 blk_size=16，按输入 scale_float.unsqueeze(-1) 乘 E2M1 值并恢复最后一维；未重新估计输入 scale。; 证据链不通过：policy.md:25、42、58 将 v5/v13 的接受数、覆盖率及 Attention MSE 退化作为引入 V 联合路由的核心项目证据，但未定位到 report、函数或正式评测记录。v32 的第二处引用在 policy.md:24 也仅写 solution.py:775-874,1033-1198，缺少完整版本路径。外部三项资料本身与 scaled attention、GGN Jacobian及交叉验证论断相符，缺口在项目内证据定位。; 写入范围通过：目标目录仅包含 policy.md 和 solution.py、无 trials；solution.py 仅导入 math、typing、torch，未发现文件系统写入、外部版本导入或越界路径访问。; 复杂度通过：policy.md:71-75 给出 S≤64、探针秩4、七 bundle 常数、校准 O(N_fit·Hq·S²·d)、动态线性编码及回退上界；对应常数见 solution.py:23-26，固定 bundle 枚举见 solution.py:1144-1164。; 诊断计划不通过：虽然 hif4_get_diagnostics() 在 solution.py:118-121 返回无副作用副本，但 policy.md:104 要求区分 nonfinite 回退。solution.py:49 声明 nonfinite_fallbacks，实际唯一递增点是 solution.py:426-430；输入在 solution.py:514、1508 已先经 nan_to_num，Attention 校准检测到非有限值后又在 solution.py:1349-1354 记入 model_fallbacks。因此非有限输入不会被可靠归入承诺的 nonfinite 诊断类别，存在计划与实现不对应。; check failed: evidence_chain; check failed: diagnostic_plan",
+      "run_id": "e322d98c2ebc-1788498722",
+      "completed_at": "2026-09-04T05:26:47.898543+00:00"
+    },
+    {
+      "version": "v41_crossfit_component_safe_routes",
+      "algorithm_family": "cross_fitted_component_safe_format_router",
+      "focus": "format",
+      "search_mode": "explore",
+      "root_cause": "v33的完整band/low-rank二次代理下降时，raw与对角加权clipping/resolution同时上升，说明拟合交叉项可能在动态样例上过度补偿；当前无法区分scale route与code的独立贡献。",
+      "baseline": "v25_unified_consumer_solver",
+      "outcome": "failed",
+      "failure": "structural review rejected: 核心实现与 policy 的三路归因不一致。`solution.py::_encode_with_models`（890-892）以 `scale_candidate` 为 joint 求解起点，但 `_component_safe_route`（718-729）判断 joint 的 `code_changed` 时仍与 parent code 比较，而不是与 `scale_candidate` 比较。若 `_fixed_code_solve` 未产生额外码字修复并原样返回 `scale_candidate`（500-501），由换 scale 后重新投影造成的码字变化仍会把同一候选计作 joint structural candidate。这破坏了 policy“scale-only、code-only、joint 配对消融”的实现对应关系，因此 `structural_algorithm=false`。; 上述判定还污染诊断语义：`joint_candidates` 和 `joint_full_delta` 在 742-748 按错误的 structural mask累计，可能重复统计纯 scale-route 候选；虽然 783-808 提供接受数和总 delta，仍无法可靠区分 joint 的额外消费者码修复贡献。因此诊断接口虽为只读，配对归因能力不成立，`diagnostic_plan=false`。; 固定 NVFP4 解码符合边界：`dequantize_nvfp4`（138-151）强制 16 值分组，以 `quant_float.unflatten(...,16)` 后逐组乘输入 `scale_float.unsqueeze(-1)`，再展平恢复原 shape；未重估或重排 scale。; policy 的证据链完整：`问题分析`区分已验证事实、理论推导和待验证假设，并分解格式 clipping/resolution、Linear 三传播项及 Attention logits/Jacobian/V 路径；`理论分析`表格逐项给出问题证据、理论依据、动作、目标指标和否证条件。外部资料的题名、作者、年份及机制与原始来源相符。; 复杂度边界明确：policy `选定修改方案/修改范围`给出校准期、动态期和峰值空间的渐近上界，固定候选数 `C=3`，并规定少于两个切分单元、无效模型、非法候选及无安全候选时回退；唯一配置还以 200 秒作为成本否证线。; 目标目录只包含 `policy.md` 和 `solution.py`，没有 trials；实现仅依赖 `math`、`typing` 和 `torch`，未包含文件写入、数据集访问或目标目录外代码修改逻辑。; check failed: structural_algorithm; check failed: diagnostic_plan",
+      "run_id": "869a69de875a-1788498803",
+      "completed_at": "2026-09-04T05:31:53.709811+00:00"
+    },
+    {
+      "version": "v38_crossfit_counterfactual_qk",
+      "algorithm_family": "crossfit_counterfactual_qk_solver",
+      "focus": "attention",
+      "search_mode": "explore",
+      "root_cause": "joint候选被8/8 head拒绝，且fit-only重拟合改变了parent，使联合动作与校准样本缩减混杂。",
+      "baseline": "v32_joint_qk_output_gate",
+      "outcome": "failed",
+      "failure": "structural review rejected: 实现包含结构级策略：`solution.py:_split_attention_samples`、`_build_joint_coordinate_mask`、`_joint_output_gate` 和 `hif4_calibration_attention` 实现全样本 parent、双向 cross-fit 与逐 head 门禁，并非纯调参。但核心回退与 policy 不一致：policy“修改范围/回退”要求联合分支异常时保留 locked parent；`_attention_dynamic` 第 1305–1328 行的 policy/shape/merge 异常却统一在第 1339–1341 行退到 `_base_encode`，会丢弃有效的模型化 locked parent，因此结构实现对应关系未通过。; `solution.py:dequantize_nvfp4` 第 137–150 行强制 block size 为 16，通过 `unflatten` 建立连续 16 值分组，并逐组乘输入 `scale_float`；未重新估计或替换 scale，前缀维度及最终 shape 得以保留。; 证据层级、相关正反例、外部资料及三行因果链基本完整；但任务明确以 Attention MSE 不低于 v25 的 `0.0002968138124547993` 为否证条件，而 policy“修改目标”“预期结果”“验收标准”仅要求低于 v32 的 `0.0002975126323162449`。两阈值之间的结果会被 policy 接受、却已满足任务否证条件，故可证伪指标与 Version task 不一致。; 目标目录仅包含 `policy.md` 与 `solution.py`，无 trials；`solution.py` 仅导入 `math`、`typing`、`torch`，未发现文件或外部状态写入路径。policy“保持不变”也明确限制修改范围为本版本目录。; policy“修改范围”给出校准期 `O(S·T·H·d)`、折外 Attention `O(S·H·T²·d)`、状态 `O(Gd)`，并限定 `T≤64`；同时说明动态期渐近阶不变、求解常数约增加一倍及各类回退条件。; `solution.py:_DIAGNOSTICS` 覆盖候选总数、accepted/rejected、cross-fit 折构建与验证、逐样例 gain 符号、动态 effective/no-policy/no-change 和 fallback；`hif4_get_diagnostics` 第 131–134 行只返回标量字典副本，读取不改变算法状态。; check failed: structural_algorithm; check failed: evidence_chain",
+      "run_id": "89b444cbe923-1788499608",
+      "completed_at": "2026-09-04T05:37:39.268211+00:00"
+    },
+    {
+      "version": "v45_resolution_clipping_frontier_solver",
+      "algorithm_family": "consumer_aligned_hierarchical_format_solver",
+      "focus": "format",
+      "search_mode": "explore",
+      "root_cause": "校准格式误差中resolution SSE为2390.66024017334，是clipping SSE 242.2480001449585的9.86864799190415倍；主要瓶颈可能是合法HiF4层级的离散分辨率，而非QK/V路由交互。",
+      "baseline": "v22_reciprocal_consumer_stack",
+      "outcome": "failed",
+      "failure": "structural review rejected: 结构策略成立：solution.py:_candidate_for_outer（210-269）枚举 8 种 LV2/LV3 路由，_encode_frontier（293-436）搜索 outer/斜率并执行 Pareto 选择，Linear 与 Attention 校准再按消费者输出选择策略；不是纯参数调节。; 固定解码合规：solution.py:dequantize_nvfp4（106-118）强制 blk_size=16，以 quant_float.unflatten(...,16) 后乘原始 scale_float.unsqueeze(-1)，未重估或替换输入 scale。; 实现对应关系不成立：policy.md“理论分析”定义消费者加权 C/R，但 _encode_frontier（341-355）用 raw_c_stack/raw_r_stack生成 Pareto mask，随后才以加权 wc_stack/wr_stack排序；原始误差支配不保证消费者加权误差支配，可能错误剪除理论模型中的非支配候选。; fail-closed 未兑现：policy.md“理论分析/验收标准”要求 heldout exact-output gate 和不可拆分时 fail-closed；但 Linear 在 heldout 缺失时仍运行 balanced 前沿（solution.py:521-538），Attention 在 heldout 缺失时返回 fallback_to_parent=False（794-850），动态阶段继续运行前沿。三个输出策略也未与标准父编码的 heldout 输出损失比较。; 复杂度上界不准确：policy.md“修改范围”声明前沿搜索 O(NFLR)、工作区 O(chunk*FL+BFL)，但 _encode_frontier（345-353）显式构造候选两两支配张量，候选数为 F×L，实际还含 O(B(FL)^2) 时间和峰值空间项。; 诊断不足：policy.md“实施步骤”承诺门禁候选/接受/回退；实现虽有 frontier 接受数及各类 fallback，并且 hif4_get_diagnostics（86-103）确实返回副本，但 output_gate_selections 在 Linear 560 行和 Attention 841 行无条件递增，包括无 heldout 或无有效候选的情况，且没有门禁候选接受/拒绝数或逐候选损失，无法得到可信的门禁接受率。; 写入范围检查通过：指定版本目录仅包含 policy.md 与 solution.py，没有 trials 或其他产物；本 Reviewer 未修改文件。; policy 的项目指标引用与 v22/v33/v32 报告相符；外部资料的题名、作者、年份和论断也可由 [SmoothQuant](https://proceedings.mlr.press/v202/xiao23c.html)、[AdaRound](https://proceedings.mlr.press/v119/nagel20a.html) 和 [GPTQ](https://arxiv.org/abs/2210.17323) 核验。拒绝原因是实现对应、复杂度和诊断缺口，而非引用缺失或分数未知。; check failed: evidence_chain; check failed: complexity_bound; check failed: diagnostic_plan",
+      "run_id": "89768380f81e-1788499629",
+      "completed_at": "2026-09-04T05:42:56.763152+00:00"
+    },
+    {
+      "version": "v34_certified_stack_pruning",
+      "algorithm_family": "certified_cost_routed_consumer_stack",
+      "focus": "combined",
+      "search_mode": "exploit",
+      "root_cause": "v22的路径专用消费者堆栈具有正式精度优势，但多模块反复扫描同一合法码域；v25证明压缩扫描可以很快，也证明统一近似替换全部代理会损失Attention精度。",
+      "baseline": "v22_reciprocal_consumer_stack",
+      "outcome": "failed",
+      "failure": "structural review rejected: 结构算法通过：policy.md“核心算法”第75-80行定义共享校准缓存、精确零收益证书及稠密/活动块路由；solution.py::_certified_fixed_scale_code_descent（1800-2154）实际实现该结构，并由 Linear、Q/K宽窗及Q/K块求解器调用。; NVFP4边界通过：solution.py::dequantize_nvfp4（336-347）保持每16值分组后乘对应输入scale并恢复末维；该函数与v22及两个trial的函数体SHA-256一致。; 证据闭环不完整：policy.md第65-69行只有缓存、Linear/Q/K坐标剪枝和诊断三条闭环；实际新增的V路径提前终止位于_solution.py::_attention_v_global_dc_repair（7055-7066）和_attention_v_lowrank_repair（7468-7479），没有各自可定位的问题证据、适用理论、目标指标及专门否证条件。; 范围通过：目标目录仅包含policy.md、主solution.py及两个trial；源码只导入typing和torch，未发现文件、数据集或共享状态写入。两个trial相对主实现各仅修改一个机制开关：cache_only关闭_CERTIFIED_STACK_MODE，certificate_only关闭_SHARED_CALIBRATION_CACHE。; 复杂度通过：policy.md第92-95行给出固定scale求解的最坏O(N·S·d)、校准O(C·d²)、O(C·d)缓存及回退边界；实现以固定descent_steps循环，并在solution.py第1887行以active_count*8<=total_units限定紧凑路由，最坏退回稠密路径。; 诊断能力不通过：虽然hif4_get_diagnostics（199-201）返回副本且不改变状态，但policy.md第123、139-140行承诺所有缓存、shape、state和nonfinite回退可核对；实际_attention_cross_hessians中非法缓存项在2978-2979行抛出后由3045-3046行直接返回None，非有限缓存于3008-3012行直接返回，均未增加calibration_cache_fallbacks或nonfinite_fallbacks，也未重试无缓存路径。_attention_attach_wide_cross_hessians（3133-3136）及_attention_hierarchy_envelope_state（3845-3849）同样存在未计数的缓存失败返回。因此候选失败和回退诊断并不完备，且与policy声明的fail-closed原路径不一致。; check failed: evidence_chain; check failed: diagnostic_plan",
+      "run_id": "ec797f58f8c0-1788497833",
+      "completed_at": "2026-09-04T05:46:32.035759+00:00"
+    },
+    {
+      "version": "v47_jacobian_conditioned_joint_qkv_student",
+      "algorithm_family": "jacobian_conditioned_joint_qkv_distillation",
+      "focus": "attention",
+      "search_mode": "explore",
+      "root_cause": "逐 head 静态线性残差没有显式表示 Q/K 双线性交互、Softmax 状态依赖和 Q/K/V 耦合；本轮 student 相对 teacher 的中心化-logit、Jacobian、V 路径 SSE 分别恶化17.1771倍、15.3796倍和2.2378倍。",
+      "baseline": "v31_output_gated_stack_distillation",
+      "outcome": "failed",
+      "failure": "structural review rejected: 结构算法通过：solution.py:7774-7982 实现联合状态统计和 group-shared 双专家低秩拟合，solution.py:8187-8462 实现有界 shrink 选择及独立 exact-output 原子门禁，属于结构级 student/补偿机制而非单独调参。; NVFP4 边界通过：solution.py:317-328 保持反量化值乘输入 scale、默认每 16 值分组并恢复原末维；所有调用点均未传入其他 blk_size。; 证据链不通过：policy.md“问题分析”事实 1、2 将 v31 门禁及路径倍率定位到 report.md:57-65、60-63、91-94，但实际关键数据位于 v31 report.md:79-80、90、119-120；其中 60-63 是最终 MSE/得分/耗时表，并不支持 17.1771×、15.3796×、2.2378× 的路径论断。此外，正例 v0_softmax_aware_qk 与反例 v32_joint_qk_output_gate 只写“Runner 注入的正式研究记忆”，未给知识记录路径、评测记录或准确 report 定位。项目证据定位不满足门禁要求，虽然后续闭环表本身包含算法动作、指标和否证条件。; 写入范围通过：指定版本目录仅含 policy.md 与 solution.py、无 trials；solution.py 未发现文件写入、外部进程、数据集或仓库状态访问代码。; 复杂度边界通过：policy.md:71-76 给出校准和动态渐近复杂度，并明确 3 fit/2 gate shard、2 experts、rank 8、最多 32 token及三个 shrink 候选；solution.py:119-130、7985-8462 与该有界搜索对应。; 诊断计划通过：solution.py:130-172 定义候选、接受/拒绝、覆盖和各类回退计数；solution.py:180-182 的 hif4_get_diagnostics() 仅复制整数快照，不改变算法状态或选择结果。; check failed: evidence_chain",
+      "run_id": "c01c9e485ec5-1788499913",
+      "completed_at": "2026-09-04T05:47:56.689036+00:00"
+    },
+    {
+      "version": "v39_format_path_ablation",
+      "algorithm_family": "output_causal_format_bifurcation",
+      "focus": "format",
+      "search_mode": "explore",
+      "root_cause": "本轮resolution SSE是clipping SSE的4.967倍，但二者没有输出级配对消融，无法判断真正驱动Attention输出的格式误差。",
+      "baseline": "v25_unified_consumer_solver",
+      "outcome": "workflow_failed",
+      "failure": "Codex step produced no events for 1800 seconds",
+      "run_id": "2c52201f7c86-1788499086",
+      "completed_at": "2026-09-04T05:58:22.054430+00:00"
+    },
+    {
+      "version": "v48_causal_format_dual_code_router",
+      "algorithm_family": "format_error_causal_dual_code_router",
+      "focus": "format",
+      "search_mode": "explore",
+      "root_cause": "v25中resolution SSE约为clipping SSE的4.9672倍但缺少输出因果映射；现有聚合代理无法判断应优先避免削顶还是提高网格内分辨率。",
+      "baseline": "v25_unified_consumer_solver",
+      "outcome": "failed",
+      "failure": "structural review rejected: 结构不合格：policy.md“理论分析”第43行承诺 `round_E2M1(x/s)` 和合法 E2M1 码，但 solution.py `_level_record()` 第216行实际生成 `0, 0.25, …, 1.75` 的均匀码，并以 `1.75*scale` 判定 clipping（第218行）。这不是所声明的 E2M1 非均匀数值集合，导致核心双候选优化建立在不同格式上。; 固定 NVFP4 输入解码合格：solution.py `dequantize_nvfp4()` 第109-120行固定每16值分组，直接将输入数值乘对应输入 scale 后恢复最后一维；未重估或替换输入 scale。; 证据闭环不完整：policy.md 第49-54行覆盖双候选和门禁，但第26、68、94行引入的 Linear 互逆二次幂 balance/双侧对角加权没有独立的“项目证据→理论依据→动作→指标→否证条件”行，也没有直接支持四次根 balance 的外部依据；此外，第43行理论公式与 solution.py 第216行实际量化器不对应。; 写入范围合格：solution.py 仅执行张量计算和内存诊断，没有文件写入路径；两个 trial 第7-13行只读取同一版本目录的主 solution.py 并切换 `_ROUTE_MODE`。; 复杂度上界不成立：policy.md 第70行令 `G` 为 KV-head 数，却把 exact-output 门禁写成 `O(SPCGT²d)`；solution.py `_group_output()` 第569-575行对每个 KV group 的 `q_heads/kv_heads` 个 Q heads 都执行 `T×T` Attention，因此上界还必须包含该倍率，即至少 `O(SPC·q_heads·T²d)`。第69-71行当前声明低估 grouped-query Attention 的校准成本。; 诊断不合格：AGENTS.md 第46-47行要求候选接受率、回退次数和逐例指标；solution.py `_crossfit_losses()` 第636-646行先把 heldout case 损失汇总，公开诊断第51-53行只有累计 gate loss，没有逐例门禁指标。另 `_attention_dynamic()` 第924、957-958行会把非有限输入清洗后继续路由，却将原始非有限 value 传入 `_record_applied_format()`，第752-765行可把 inf/nan 累加进诊断，使 policy.md 第114行要求的 `json.dumps(..., allow_nan=False)` 可序列化保证失效。; check failed: structural_algorithm; check failed: evidence_chain; check failed: complexity_bound; check failed: diagnostic_plan",
+      "run_id": "5838b91971ce-1788500577",
+      "completed_at": "2026-09-04T06:01:12.773215+00:00"
+    },
+    {
+      "version": "v44_signed_hyperbundle_lookahead",
+      "algorithm_family": "non_submodular_signed_hyperbundle_router",
+      "focus": "attention",
+      "search_mode": "explore",
+      "root_cause": "当前候选图只表示同KV组的二原子QK+V pair，并以近似次模lazy-greedy选择；QK singleton全部非正、存在1次次模违例，可能遗漏只有在多V块或多窗口联合时才转正的高阶ΔPΔV互补。",
+      "baseline": "v35_counterfactual_path_bundles",
+      "outcome": "workflow_failed",
+      "failure": "Codex step produced no events for 1800 seconds",
+      "run_id": "190db76dd9b3-1788500259",
+      "completed_at": "2026-09-04T06:12:13.243615+00:00"
+    },
+    {
+      "version": "v43_pathwise_output_certified_stack",
+      "algorithm_family": "pathwise_output_certified_consumer_stack",
+      "focus": "combined",
+      "search_mode": "exploit",
+      "root_cause": "v22具有当前综合分和两类MSE的Pareto优势，但组合实现缺少模块级正式消融，无法拒绝个别有害修复路径或确认各路径的独立贡献。",
+      "baseline": "v22_reciprocal_consumer_stack",
+      "outcome": "failed",
+      "failure": "structural review rejected: 实现对应关系不通过：policy.md:91-96、146-148 承诺动态掩码、shape、state 或非有限异常均回退到完整 v22 教师；但 solution.py:_attention_quantize_decoded_value（8054-8069）失败后，_attention_dynamic（8600-8602）仅返回普通 _quantize_hif4 编码。编译状态也未保留可重新执行的完整教师副本，因此核心 fail-closed 保证未实现。; NVFP4 固定边界通过：solution.py:364-375 与 v22 的 dequantize_nvfp4 AST 函数体哈希相同；仍按连续块 unflatten、乘输入 scale_float.unsqueeze(-1) 并恢复末维，默认块大小为 16。; 证据链通过：policy.md:25-58 分解 Linear 三项、中心化 logits/Jacobian/V 路径及 clipping/resolution；74-81 给出完整因果闭环，152-156 给出任务一致的否证指标。相关项目指标可定位至 v22、v25、v31、v32 报告；[GPTQ](https://arxiv.org/abs/2210.17323)、[SmoothQuant](https://arxiv.org/abs/2211.10438) 和 [Stone 1974](https://doi.org/10.1111/j.2517-6161.1974.tb00994.x) 支持对应理论论断。; 写入范围通过：指定目录仅含 policy.md 与 solution.py、没有 trials；源码只导入 typing 与 torch，未发现文件、网络或子进程写入。审查前后两文件 SHA-256 保持 B8A25653… 与 83A915B0… 不变。; 复杂度边界不通过：policy.md:100 声称额外激活内存为 O(K·L·d) 且按样例流式计算；实际 _attention_exact_output（8092-8127）物化 O(heads·L²) 的 logits 和 probability，_attention_certify_paths（8333-8443）还在 observations 中保留每个 heldout 的 reference logits/probability/output，因此至少缺少 O(H·heads·L²) 峰值项。该上界也未覆盖 8364-8402 调用完整 Q/K/V 修复链的搜索成本。; 诊断能力不通过：_DIAGNOSTICS（133-208）只导出聚合 loss，没有候选选择所需的逐 heldout 样例指标；并且 Linear heldout shape 错误在 2430-2466 被计为 nonfinite，Attention heldout shape 错误在 8349-8447 同样被计为 nonfinite。动态阶段所有 shape/state/nonfinite 失败又统一计入 attention_dynamic_state_fallbacks（8587-8602），无法兑现 policy.md:136、155 对分类回退及相互核对的承诺。hif4_get_diagnostics（227-229）本身虽为只读字典副本，但计数内容不完整。; check failed: structural_algorithm; check failed: complexity_bound; check failed: diagnostic_plan",
+      "run_id": "6a23edba827a-1788500876",
+      "completed_at": "2026-09-04T06:15:49.899382+00:00"
+    },
+    {
+      "version": "v50_factorial_qkv_interaction_router",
+      "algorithm_family": "factorial_exact_output_path_router",
+      "focus": "attention",
+      "search_mode": "explore",
+      "root_cause": "v37只有V+QK组合结果，尚未区分QK-only、V-only与联合交叉项；QK覆盖87.5%且动态成本高，可能包含条件边际很低或与V冗余的单元。",
+      "baseline": "v37_heldout_qk_rescue_cascade",
+      "outcome": "workflow_failed",
+      "failure": "Codex step produced no events for 1800 seconds",
+      "run_id": "da88419850d4-1788501631",
+      "completed_at": "2026-09-04T06:43:09.043254+00:00"
+    },
+    {
+      "version": "v49_v23_v22_exact_expert_router",
+      "algorithm_family": "dual_pareto_exact_expert_router",
+      "focus": "combined",
+      "search_mode": "exploit",
+      "root_cause": "v23具备29.82529370021075秒的速度Pareto但得分19778.137445442084；v22具备21923.919748653454的精度Pareto但耗时48.718902699649334秒。v31表明近似v22的student无法通过输出门禁，应改为在两个已验证expert间路由。",
+      "baseline": "v23_budgeted_repair_router",
+      "outcome": "workflow_failed",
+      "failure": "Codex step produced no events for 1800 seconds",
+      "run_id": "270754901272-1788501502",
+      "completed_at": "2026-09-04T06:49:00.948583+00:00"
+    },
+    {
+      "version": "v53_interaction_aware_coalition_router",
+      "algorithm_family": "interaction_aware_coalition_router",
+      "focus": "attention",
+      "search_mode": "explore",
+      "root_cause": "QK 与 V 可能存在强互补；独立边际门禁不能识别 full、QK-off、V-off、both-off 四状态的联合贡献，且五样例两折选择未保护正式 Attention MSE。",
+      "baseline": "v40_consumer_stack_component_router",
+      "outcome": "failed",
+      "failure": "structural review rejected: 核心策略属于结构级变更：`policy.md:51-72` 定义四状态 coalition 联合选择；`solution.py:_select_coalition_states`（7977-8037）实现跨两折及 pooled 的 full-dominance 门禁，`_attention_component_router_state`（8040-8369）将状态解码为 QK/V 原子 mask。; NVFP4 语义保持固定：`solution.py:392-403` 将末维按 16 值展开并直接乘对应输入 scale 后恢复末维；六个公开接口均调用该路径，未重估或替换输入 scale。; 拒绝原因是核心损失模型存在 policy/实现不一致：`policy.md:53-57` 明确定义 group loss 为“先对 GQA consumer heads 求均值，再以平均参考能量归一化”，即 `mean_h(error²)/(mean_h(reference²)+ε)`；但 `solution.py:_router_group_normalized_loss`（7876-7884）先对每个 head 分别计算 `error²/reference²`，再对 head 求均值。两者在各 head 参考能量不同时不等价，并会改变 8219-8229、8277-8281 的稳定资格及最终状态选择，因此“问题证据→理论损失→算法动作”的实现对应关系未闭合。; 目标目录包含 `policy.md`、主配置及两个 trial；两个 trial 相对主配置仅在 `solution.py:120` 将 `_COALITION_ROUTER_MODE` 改为 `qk_off` 或 `v_off`。任务开始后的文件时间检查未发现指定目录外新增写入。; `policy.md:80-85` 给出校准、联合选择、峰值内存和动态期的渐近上界，并列明校准及动态回退条件。; `solution.py:hif4_get_diagnostics`（216-257）只复制标量状态并派生候选、接受和回退计数；8299-8361 记录四状态稳定/选择、interaction 和误差分解，8420-8532 记录动态 routed/effective 与分类回退，诊断读取不改变算法状态。; check failed: evidence_chain",
+      "run_id": "aee1db85e336-1788503527",
+      "completed_at": "2026-09-04T06:49:15.657452+00:00"
     }
   ]
 }

@@ -47,12 +47,42 @@ def metrics_are_current(metrics: dict[str, Any] | None) -> bool:
     )
 
 
+def experiment_has_current_evaluation(item: dict[str, Any]) -> bool:
+    """Only a real 50+250 run may influence formal research memory.
+
+    Older records may contain scores projected from 5+5 diagnostics. Keeping
+    them in the ledger is useful for provenance, but treating them as
+    comparable observations corrupts stagnation, family rewards, and prompts.
+    Missing profile metadata is therefore intentionally ineligible.
+    """
+    return bool(
+        item.get("outcome") == "evaluated"
+        and item.get("evaluation_profile") == "F300"
+        and int(item.get("linear_case_count", -1)) == CURRENT_LINEAR_CASES
+        and int(item.get("attention_case_count", -1)) == CURRENT_ATTENTION_CASES
+    )
+
+
+def experiment_is_usable(item: dict[str, Any]) -> bool:
+    """Retain failures, but reject scores that are not full F300 results."""
+    return item.get("outcome") != "evaluated" or experiment_has_current_evaluation(item)
+
+
+def artifact_is_present(node: dict[str, Any]) -> bool:
+    """Return whether a registry entry still has an executable solution artifact."""
+    return node.get("artifact_state", "present") != "pruned"
+
+
 def _eligible_versions(registry: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     bad = {"failed", "draft", "environment_failed", "evaluation_timeout", "invalid_after_evaluation"}
     return [
         (name, node)
         for name, node in registry.get("versions", {}).items()
-        if node.get("status") not in bad and metrics_are_current(node.get("metrics"))
+        if (
+            artifact_is_present(node)
+            and node.get("status") not in bad
+            and metrics_are_current(node.get("metrics"))
+        )
     ]
 
 
@@ -121,7 +151,7 @@ def build_pareto_archive(registry: dict[str, Any]) -> dict[str, Any]:
 
 
 def stagnation_length(experiments: list[dict[str, Any]]) -> int:
-    evaluated = [item for item in experiments if item.get("outcome") == "evaluated"]
+    evaluated = [item for item in experiments if experiment_has_current_evaluation(item)]
     evaluated.sort(key=lambda item: item.get("completed_at", ""), reverse=True)
     count = 0
     for item in evaluated:
@@ -167,7 +197,7 @@ def adaptive_priority(
     family = task.get("algorithm_family")
     family_runs = [
         item for item in experiments
-        if item.get("outcome") == "evaluated" and item.get("algorithm_family") == family
+        if experiment_has_current_evaluation(item) and item.get("algorithm_family") == family
     ]
     family_failures = [
         item for item in experiments
@@ -184,7 +214,7 @@ def adaptive_priority(
             / max(abs(float(denominator)), 1.0)
         )
     family_reward = math.tanh(8.0 * (sum(relative_gains) / len(relative_gains))) if relative_gains else 0.0
-    total_runs = sum(item.get("outcome") == "evaluated" for item in experiments)
+    total_runs = sum(experiment_has_current_evaluation(item) for item in experiments)
     exploration = math.sqrt(math.log(total_runs + 2.0) / (len(family_runs) + 1.0))
     stagnation = stagnation_length(experiments)
     pivot_boost = min(stagnation, 6) / 6.0 * (
@@ -217,6 +247,7 @@ def compact_research_context(
         (
             item for item in experiments
             if item.get("outcome") in {"evaluated", "failed", "evaluation_timeout"}
+            and experiment_is_usable(item)
             and not ("baseline" in item and item.get("baseline") is None)
         ),
         key=lambda item: (
@@ -256,19 +287,23 @@ def compact_research_context(
         "relevant_negative_experiments": [compact(item) for item in negatives],
         "pareto_front": pareto.get("front", [])[:8],
         "stagnation_length": stagnation_length(experiments),
-        "context_policy": "只保留与当前方向最相关且有真实评测支撑的正反例；不要把记忆当作隐藏集事实。",
+        "context_policy": (
+            "只保留与当前方向相关且有完整 F300 评测支撑的正反例；"
+            "不得把 F10/F60 诊断或研究记忆当作隐藏集事实。"
+        ),
     }
 
 
 def build_process_metrics(experiments: list[dict[str, Any]]) -> dict[str, Any]:
+    experiments = [item for item in experiments if experiment_is_usable(item)]
     references = [
         item for item in experiments
-        if item.get("outcome") == "evaluated"
+        if experiment_has_current_evaluation(item)
         and "baseline" in item and item.get("baseline") is None
     ]
     evaluated = [
         item for item in experiments
-        if item.get("outcome") == "evaluated" and item not in references
+        if experiment_has_current_evaluation(item) and item not in references
     ]
     failures: dict[str, int] = {}
     for item in experiments:
@@ -295,7 +330,7 @@ def build_process_metrics(experiments: list[dict[str, Any]]) -> dict[str, Any]:
             "score_delta_sum": 0.0, "seconds": 0.0,
         })
         entry["attempts"] += 1
-        if item.get("outcome") == "evaluated":
+        if experiment_has_current_evaluation(item):
             entry["evaluated"] += 1
             delta = float(item.get("score_delta", 0.0))
             entry["positive"] += delta > 0
@@ -315,7 +350,7 @@ def build_process_metrics(experiments: list[dict[str, Any]]) -> dict[str, Any]:
             "score_delta_sum": 0.0, "seconds": 0.0,
         })
         entry["attempts"] += 1
-        if item.get("outcome") == "evaluated":
+        if experiment_has_current_evaluation(item):
             entry["evaluated"] += 1
             delta = float(item.get("score_delta", 0.0))
             entry["positive"] += delta > 0

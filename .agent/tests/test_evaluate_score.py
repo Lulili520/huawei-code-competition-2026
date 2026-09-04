@@ -25,11 +25,16 @@ class WeightedScoreTest(unittest.TestCase):
 
     def test_score_scale_stays_equal_for_equal_case_scores(self) -> None:
         score = SCORING.weighted_total_score([0.6] * 5, [0.6] * 5)
-        self.assertAlmostEqual(score, 600.0)
+        self.assertAlmostEqual(score, 18000.0)
 
     def test_each_category_is_averaged_before_weighting(self) -> None:
         score = SCORING.weighted_total_score([1.0], [0.0] * 5)
-        self.assertAlmostEqual(score, 100.0)
+        self.assertAlmostEqual(score, 5000.0)
+
+    def test_score_scale_is_independent_of_sample_count(self) -> None:
+        short = SCORING.weighted_total_score([0.5], [0.25])
+        fixed = SCORING.weighted_total_score([0.5] * 5, [0.25] * 5)
+        self.assertAlmostEqual(short, fixed)
 
     def test_both_categories_are_required(self) -> None:
         with self.assertRaises(ValueError):

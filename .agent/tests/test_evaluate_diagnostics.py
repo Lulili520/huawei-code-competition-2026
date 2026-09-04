@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+
+import torch
 
 
 SCRIPTS = (
@@ -35,6 +39,39 @@ class EvaluationDiagnosticsTest(unittest.TestCase):
     def test_invalid_group_limit_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             EVALUATE.select_groups([1, 2], 0)
+
+    def test_reference_cache_reuses_exact_candidate_independent_outputs(self) -> None:
+        quant_weight = torch.ones((4, 64), dtype=torch.bfloat16)
+        scale_weight = torch.ones((4, 4), dtype=torch.bfloat16)
+        quant_activation = torch.ones((2, 64), dtype=torch.bfloat16)
+        scale_activation = torch.ones((2, 4), dtype=torch.bfloat16)
+        group = {
+            "weight_quant": quant_weight,
+            "weight_scale": scale_weight,
+            "test_activation_list": [(quant_activation, scale_activation)],
+        }
+        with tempfile.TemporaryDirectory(prefix="hif4_cache_test_") as directory:
+            root = Path(directory)
+            (root / "manifest.json").write_text(
+                json.dumps({"dataset": "synthetic"}), encoding="utf-8",
+            )
+            cache = EVALUATE.ReferenceCache(root, enabled=False)
+            first = cache.get(
+                "linear", 0, 1,
+                lambda: EVALUATE.build_linear_reference_cases(group),
+            )
+            second = cache.get(
+                "linear", 0, 1,
+                lambda: self.fail("in-memory reference cache was not reused"),
+            )
+        direct = (
+            EVALUATE.decode_nvfp4(quant_activation, scale_activation)
+            @ EVALUATE.decode_nvfp4(quant_weight, scale_weight).T
+        )
+        self.assertTrue(torch.equal(first["cases"][0]["reference"], direct))
+        self.assertIs(first, second)
+        self.assertEqual(cache.misses, 1)
+        self.assertEqual(cache.hits, 1)
 
 
 if __name__ == "__main__":

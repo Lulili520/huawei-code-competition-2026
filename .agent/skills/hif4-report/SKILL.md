@@ -7,7 +7,7 @@ description: Create a fixed-structure post-evaluation report.md for a flat HiF4 
 
 Create `solution/<version>/report.md` only after `$hif4-evaluate` succeeds. `policy.md` records the plan; `report.md` records observed facts and lessons.
 
-The report stage is also the only stage allowed to propose follow-up algorithms. It receives the completed full-evaluation metrics and diagnostics, writes `report.md`, and returns exactly three structured proposals to Runner: two `explore` and one `exploit`. Those proposals are not guessed during implementation and do not have to use the current version as `based_on`.
+The report stage is also the only stage allowed to propose follow-up algorithms. It receives the completed fixed-evaluation metrics and diagnostics, writes `report.md`, and returns exactly three structured proposals to Runner: two `explore` and one `exploit`. Those proposals are not guessed during implementation and do not have to use the current version as `based_on`.
 
 Use every heading below, in this order. Do not rename, omit, or reorder sections.
 
@@ -22,14 +22,7 @@ Use every heading below, in this order. Do not rename, omit, or reorder sections
 | Attention Output MSE | <value> |
 | 最终得分 | **<value>** |
 
-## 分级评测
-
-### 筛选阶段
-
-| 配置 | Linear MSE | Attention MSE | 筛选得分 | 是否晋级 |
-|---|---:|---:|---:|---|
-
-### 完整评测
+## 配置评测
 
 | 配置 | Linear MSE | Attention MSE | 正式得分 | 耗时 | 是否选用 |
 |---|---:|---:|---:|---:|---|
@@ -69,13 +62,13 @@ Use every heading below, in this order. Do not rename, omit, or reorder sections
 
 ## Section requirements
 
-- `本地结果`：顶部主表只能写最终选中配置在完整 300 例上的两项 MSE 和最终得分，不添加估算平台分数。
-- `分级评测`：筛选表列出全部内部配置的 10 + 50 例指标；完整评测表只列晋级配置的 50 + 250 例指标。醒目标注两个分数尺度不同，禁止用筛选分数与正式分数计算增量。
+- `本地结果`：顶部主表只能写最终选中配置实际运行 50 Linear + 250 Attention 后的两项 MSE 和最终得分，不添加估算平台分数。
+- `配置评测`：分开列出 60 例内部筛选和完整 300 例正式评测。只有后者能决定版本得分与最终选择；不得混入 smoke test 或估算结果。
 - `实现基础`：记录 `based_on` 对比版本，以及实际使用 `based_on`、`v0_hessian_repair` 或 `scratch`；说明复用和重写范围，不表达父子关系。
 - `核心算法`：用白话说明本版本新增或替换的量化算法、数据流和误差目标。明确它与基准版本的算法差异；不能把超参数变化描述成核心算法。
 - `超参数说明`：列出该算法实际使用的关键超参数。对每项解释它控制什么、增大或减小会带来什么影响、实际测试的两到三个配置、最终取值及选择依据。没有进行多配置实验的固定参数也要说明其理论来源或继承来源，不得伪造测试结果。
 - 同一算法最多进行两到三次有理论依据的配置试验，配置结果保留在同一个版本报告中，不为纯参数变化创建额外版本。表格只保留影响算法行为的关键参数，不罗列设备、随机种子或无关实现常量。
-- `完整评测`：只比较 Runner 实际执行的完整 300 例结果。未晋级配置只出现在筛选表，不能伪造完整 MSE。明确算法相对基准版本的收益与内部调参带来的增量。
+- `正式评测`：只比较 Runner 实际执行的完整 50 + 250 结果。明确算法相对基准版本的收益与内部调参带来的增量；不得用任何部分评测补位或外推。
 - `与基准版本对比`：写出基准版本名，并分别说明两项 MSE 和最终得分上升、下降或不变。不要只说“效果更好”。
 - `Policy 执行情况`：说明实际修改了哪些函数和参数、哪些计划未实现，以及与 policy 偏离的原因。
 - `原因分析`：判断结果是否支持 policy 的理论假设，解释收益或退化如何产生，并区分有数据支持的结论与推测。回到 policy 声明的根因分解：Linear 分别检查 `ΔXWᵀ`、`XΔWᵀ` 和 `ΔXΔWᵀ`；Attention 分别检查中心化 logits、Softmax Jacobian 敏感方向和 V 路径；格式策略区分 clipping 与 resolution。
@@ -89,7 +82,7 @@ Use every heading below, in this order. Do not rename, omit, or reorder sections
 
 ## Structured follow-up requirements
 
-Only after the selected configuration has a complete 50 Linear + 250 Attention result, return exactly three structural directions through the report-result schema:
+Only after the selected configuration has a valid full 50 Linear + 250 Attention result, return exactly three structural directions through the report-result schema:
 
 1. two `explore` directions that test distinct root causes, cross algorithm families, or use `scratch` when warranted;
 2. one `exploit` direction backed by a measured positive result or Pareto component advantage, with evidence strength sufficient for exploitation;
@@ -97,4 +90,4 @@ Only after the selected configuration has a complete 50 Linear + 250 Attention r
 
 An `exploit` direction may use another evaluated Pareto version when the current hypothesis was rejected. None of the three may be a pure alpha, threshold, gain, multiplier, or candidate-count change. Runner deduplicates and dynamically reranks these proposals into the global portfolio; it targets six active slots in a 4 `explore` + 2 `exploit` mix.
 
-The automatic target is a full 300-case score of `20000`. Never describe a compact self-check or 60-case screening score as reaching that target.
+The full-300 local score target is `20000`, but it does not automatically stop iteration. Never describe a compact self-check, 60-case screening result, smoke test or manual partial diagnostic as a formal result.

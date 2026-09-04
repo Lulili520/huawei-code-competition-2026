@@ -4,7 +4,7 @@
 
 `.agent/runner.py` 使用固定 6 个本地 Codex Agent 槽位；候选充足时持续占满，空槽不等待同批任务结束。全局组合目标固定为 4 个 `explore`（探索新根因或跨算法族机制）和 2 个 `exploit`（沿已有正式正证据或 Pareto 分项优势深化）。正在运行的任务也计入 4:2 配额；某一角色暂时没有合法候选时，另一角色可以借用空槽，但 Runner 不得伪造任务或用纯调参凑数。
 
-每个 Agent 独立完成一个完整算法版本：问题分析与调研、`policy.md`、算法实现、最多三组内部超参数配置、结构审查、分级评测、`report.md` 和扁平版本账本登记。
+每个 Agent 独立完成一个完整算法版本：问题分析与调研、`policy.md`、算法实现、最多三组内部超参数配置、结构审查、60 例内部配置筛选、300 例正式评测、`report.md` 和扁平版本账本登记。
 
 不存在单独的“发现 Agent”和“实现 Agent”。一个版本完成后立即按真实得分更新全局优先队列，无须等待同批任务结束。
 
@@ -18,7 +18,7 @@ Runner 启动任务时记录评测器、评分公式、配置、schema 与数据
 
 - 当前筛选保留的起始算法统一使用 `v0_<方法概括>`，表示并列的初始方法库。后续 Agent 新实验继续使用 `vN_<方法概括>`，其中 `N` 从 1 起全局连续分配。
 - 不存在父子树、代数和每个节点三个子版本的限制。
-- `v0_hessian_repair` 是固定比较基线；现存的其他 `v0_*` 是已按同一 300 例口径复测的并列初始方法。新版本号由 Runner 在全局锁内分配为当前最大编号加一。
+- `v0_hessian_repair` 是固定比较基线；现存的其他 `v0_*` 是历史并列初始方法。新版本号由 Runner 在全局锁内分配为当前最大编号加一。
 - 每个版本可记录 `based_on`，表示比较基准或代码来源；它只是溯源信息，不形成父子关系，也不限制后续从其他版本继续研究。
 - 实现来源为 `based_on`、`v0_hessian_repair` 或 `scratch`。`policy.md` 必须解释为什么选择该来源。
 - 方法概括写入目录后缀；完整算法族、问题方向和来源同时写入扁平账本 `.agent/versions.json`。
@@ -40,21 +40,21 @@ Runner 启动任务时记录评测器、评分公式、配置、schema 与数据
 
 ## 评分与优化重点
 
-- 正式本地评测固定使用合并数据集中的 50 个 Linear 和 250 个 Attention 样例，共 300 例。
-- 单例得分为 `(MSE_STD-MSE_PLAYER)/MSE_STD×100%`；最终分是 300 个 case 提升百分比之和。实现上分别求两类均值、按 Linear : Attention = 1 : 5 加权，再乘 300 和 100，与直接逐例求和严格等价。
+- 正式本地评测必须实际运行合并数据集的 50 个 Linear 和 250 个 Attention，共 300 个样例。
+- 单例得分为 `(MSE_STD-MSE_PLAYER)/MSE_STD×100%`；综合分先分别求两类平均分，再按 Linear : Attention = 1 : 5 加权并乘 300。这与直接累加 300 个单例百分比得分等价，不是小样本外推。
 - 因 Attention 权重为 Linear 的五倍，全局排序以综合分为主；同时保留 Linear MSE 和 Attention MSE 用于定位问题。
 - 任何候选选择算法都应记录候选接受率、回退次数和逐例指标。只有汇总 MSE、没有中间诊断的版本不得直接据此扩展同类复杂策略。
+- 允许缓存与候选无关的浮点参考输出和标准编码误差，缓存键必须绑定数据清单、PyTorch 版本与评测算法版本；候选量化、全部 300 例及计分仍须逐版本真实执行。缓存启用前必须以同一筛选集验证分数和两类 MSE 完全一致。
 - 评测器统一记录每类逐例得分的最小值、P10、中位数、P90、最大值、负收益 case 数与阶段耗时。含内部搜索的算法还应通过只读 `hif4_get_diagnostics()` 返回接受数、候选总数和回退次数。
 - 综合分仍是正式排序主指标；同时维护得分最大、两类 MSE 最小和耗时最小的 Pareto 非支配档案。Linear 专项、Attention 专项或速度版本可以成为后续实现基础，即使它不是综合最高分。
-- 自动停止阈值是完整 50 Linear + 250 Attention 正式评测得分 `20000`。compact 自检、60 例筛选分或估算分均不能触发停止；达到阈值后 Runner 停止新任务派发，并允许已经开始的原子任务安全收尾。
+- `20000` 只作为阶段目标和参考线，不自动停止 Runner。Runner 持续迭代，直到用户明确暂停或结束。
 
-## 分级评测
+## 固定评测
 
-- 官方 compact 5 Linear + 5 Attention 仅用于六接口、shape 和输出格式自检，不登记算法得分。
-- 当内部配置数超过正式晋级名额时，先在固定且等距抽取的 10 Linear + 50 Attention 子集上筛选。所有配置在同一评测进程中共享一次数据加载，避免重复读取约 3.7 GB 数据。
-- 筛选排名前 2 的配置进入完整 50 Linear + 250 Attention 正式评测；若本来只有 1～2 个配置，则直接完整评测，避免无法淘汰候选的无效筛选。只有完整结果能写入版本账本并参与全局排序。
-- 筛选与正式结果必须分别记录，禁止比较两个口径下的分数绝对值。单配置版本直接进行完整评测。
-- 筛选和正式数值评测共用全局串行锁，避免多个进程同时加载大数据造成内存与 I/O 抖动。
+- 官方 compact 5 Linear + 5 Attention 用于六接口、shape 和输出格式自检，不登记算法得分。
+- 最多三组内部配置先在确定性等距抽取的 10 Linear + 50 Attention 上筛选，再让前两名进入完整 50 + 250 评测；一至两组配置可直接完整评测。同一阶段的配置共享一次数据加载。
+- 只有实际完成 300 例的结果能写入版本账本并参与全局排序；compact 自检、60 例筛选、局部 smoke test 或估算分均不得登记为正式结果。
+- 正式数值评测共用全局串行锁，避免多个进程同时加载大数据造成内存与 I/O 抖动。
 
 ## 扁平调度
 
@@ -64,7 +64,7 @@ Runner 启动任务时记录评测器、评分公式、配置、schema 与数据
 - 空槽从全局优先队列直接补位；禁止用纯调参任务凑数。
 - 每次并发派发先满足 4:2 角色组合，再在每种角色内覆盖不同 focus 和算法族，最后才按优先级补满或借用剩余槽位，避免高相似候选同时占满 6 个 Agent。
 - 正式评测全局串行。Agent 在独立快照中工作，Runner 只导入目标数字版本文件，并独占写入 queue、versions 和正式结果。
-- Runner 持续迭代，直到用户明确暂停/结束，或某个完整 300 例正式得分达到 `20000`。后者只停止新派发，不把仍在收尾的任务强行中断。
+- Runner 持续迭代，直到用户明确暂停或结束。
 
 ## 研究记忆与防止局部最优
 
@@ -77,8 +77,8 @@ Runner 启动任务时记录评测器、评分公式、配置、schema 与数据
 
 ```text
 queued → running → isolated policy/implementation → structural review
-       → at most 3 internal configs → serialized screening
-       → top-2 serialized full evaluation
+       → at most 3 internal configs → optional 60-case config screening
+       → serialized full 300-case evaluation
        → report + 2 explore/1 exploit proposals
        → flat registry record → completed
 ```
@@ -87,13 +87,13 @@ queued → running → isolated policy/implementation → structural review
 
 Runner 启动前必须通过 `codex --version`，并直接执行目标 Conda 环境内 Python 的绝对路径与 `--version`。正式评测不得再经过 `conda run` 包装层。Python/Codex/评测子进程统一强制 UTF-8。基础设施错误记为 `environment_failed`，不得写成算法失败或更新算法指标。
 
-每个 Codex 子进程必须使用 `--ignore-user-config --ephemeral` 隔离用户级 MCP、提示和会话状态，同时显式指定模型、角色对应 reasoning effort 与 service tier。保留内置 code-mode host；连续 600 秒没有 stdout/stderr 事件时按空闲超时终止并进入可恢复失败路径，避免外部插件或悬挂命令无限占槽。
+每个 Codex 子进程必须使用 `--ignore-user-config --ephemeral` 隔离用户级 MCP、提示和会话状态，同时显式指定模型、角色对应 reasoning effort 与 service tier。保留内置 code-mode host；长时间没有 stdout/stderr 事件时按空闲超时终止并进入可恢复失败路径。若已输出合法结构化结果和 `turn.completed` 但 Windows 进程未退出，宽限期后允许回收进程并采用事件流中的结果。
 
 Windows 受限沙箱若触发 `CreateProcessWithLogonW 1385`，允许 Codex 使用 `danger-full-access`，但每个任务仍必须位于独立快照，共享状态仍由 Runner 独占写入。快照不复制 `datasets/` 和 `reference/`；Agent 禁止绕过快照自行访问根数据或执行正式评分。
 
 ## 文件结构
 
-- `solution/v0_hessian_repair/`：当前 300 例基线，只包含 `solution.py` 和 `report.md`。
+- `solution/v0_hessian_repair/`：固定根基线，只包含 `solution.py` 和 `report.md`。
 - `solution/v0_<方法概括>/`：保留的其他初始候选，包含 `policy.md`、`solution.py` 和 `report.md`。
 - `solution/vN_<方法概括>/`：包含 `policy.md`、`solution.py`、`report.md`，以及可选的 `trials/<config>/solution.py`。
 - `.agent/versions.json`：扁平版本账本。

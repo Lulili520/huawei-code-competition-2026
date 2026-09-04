@@ -40,7 +40,7 @@ python .agent/skills/hif4-version/scripts/versions.py queue
 
 The queue dynamically combines source quality, evidence, novelty, uncertainty, family history, exploration/stagnation rewards, cost and failure penalties; it does not simply copy a source version's score. Within each search role it covers distinct focus values and algorithm families before filling by priority. Choose `based_on` according to algorithm fit as well as score; for example, the Linear-MSE leader may be a better implementation reference for a Linear-only strategy than the global score leader.
 
-Only a complete 50 Linear + 250 Attention result may update the ledger or satisfy the automatic target. The target is a full score of `20000`; compact self-check and screening scores never count. Once reached, Runner stops new dispatch while allowing already running atomic tasks to finish.
+Only a valid full 50 Linear + 250 Attention formal result may update the ledger. `20000` is a reference target on those actually executed 300 cases, not an automatic stop. Compact self-check, 60-case screening and manual diagnostic scores never count. Runner stops only when the user explicitly pauses or ends it.
 
 Recovery preserves version identity. When a timed-out workspace already contains substantial implementation artifacts, `recover` resumes at `implementation_finalize`; when full evaluation is checkpointed, it resumes report/registration without spending another full evaluation.
 

@@ -35,6 +35,17 @@ def node(score: float, linear: float, attention: float, seconds: float) -> dict:
     }
 
 
+def evaluated_record(**changes: object) -> dict:
+    record = {
+        "outcome": "evaluated",
+        "evaluation_profile": "F300",
+        "linear_case_count": 50,
+        "attention_case_count": 250,
+    }
+    record.update(changes)
+    return record
+
+
 class StrategyTest(unittest.TestCase):
     def setUp(self) -> None:
         self.registry = {
@@ -67,6 +78,13 @@ class StrategyTest(unittest.TestCase):
         self.assertEqual(archive["champions"]["score"], "v0_score")
         self.assertEqual(archive["champions"]["linear_mse"], "v0_linear")
 
+    def test_pareto_excludes_pruned_solution_artifacts(self) -> None:
+        self.registry["versions"]["v0_score"]["artifact_state"] = "pruned"
+        archive = build_pareto_archive(self.registry)
+        names = {item["version"] for item in archive["front"]}
+        self.assertEqual(names, {"v0_linear"})
+        self.assertEqual(archive["champions"]["score"], "v0_linear")
+
     def test_priority_rewards_evidence_and_penalizes_cost(self) -> None:
         low, _ = adaptive_priority(
             self.task(evidence_strength=0.1, expected_cost=2.5), self.registry, []
@@ -94,19 +112,30 @@ class StrategyTest(unittest.TestCase):
 
     def test_stagnation_stops_at_last_global_best(self) -> None:
         experiments = [
-            {"outcome": "evaluated", "completed_at": "1", "new_global_best": True},
-            {"outcome": "evaluated", "completed_at": "2", "new_global_best": False},
-            {"outcome": "evaluated", "completed_at": "3", "new_global_best": False},
+            evaluated_record(completed_at="1", new_global_best=True),
+            evaluated_record(completed_at="2", new_global_best=False),
+            evaluated_record(completed_at="3", new_global_best=False),
         ]
         self.assertEqual(stagnation_length(experiments), 2)
 
+    def test_partial_diagnostic_does_not_change_stagnation(self) -> None:
+        experiments = [
+            evaluated_record(completed_at="1", new_global_best=True),
+            {
+                "outcome": "evaluated", "evaluation_profile": "F10",
+                "linear_case_count": 5, "attention_case_count": 5,
+                "completed_at": "2", "new_global_best": False,
+            },
+        ]
+        self.assertEqual(stagnation_length(experiments), 0)
+
     def test_memory_context_is_bounded(self) -> None:
         experiments = [
-            {
-                "outcome": "evaluated", "completed_at": str(index),
-                "focus": "attention", "score_delta": float(index - 5),
-                "version": f"v{index}_x",
-            }
+            evaluated_record(
+                completed_at=str(index),
+                focus="attention", score_delta=float(index - 5),
+                version=f"v{index}_x",
+            )
             for index in range(12)
         ]
         context = compact_research_context(
@@ -122,16 +151,16 @@ class StrategyTest(unittest.TestCase):
 
     def test_process_metrics_measure_screening_and_budget_efficiency(self) -> None:
         metrics = build_process_metrics([
-            {
-                "outcome": "evaluated", "score_delta": 10.0, "seconds": 1800,
-                "new_global_best": True, "algorithm_family": "a",
-                "screening": {"winner_agreement": True}, "completed_at": "1",
-            },
-            {
-                "outcome": "evaluated", "score_delta": -2.0, "seconds": 1800,
-                "new_global_best": False, "algorithm_family": "b",
-                "screening": {"winner_agreement": False}, "completed_at": "2",
-            },
+            evaluated_record(
+                score_delta=10.0, seconds=1800,
+                new_global_best=True, algorithm_family="a",
+                screening={"winner_agreement": True}, completed_at="1",
+            ),
+            evaluated_record(
+                score_delta=-2.0, seconds=1800,
+                new_global_best=False, algorithm_family="b",
+                screening={"winner_agreement": False}, completed_at="2",
+            ),
             {"outcome": "evaluation_timeout", "algorithm_family": "b"},
         ])
         self.assertEqual(metrics["screening_winner_agreement_rate"], 0.5)

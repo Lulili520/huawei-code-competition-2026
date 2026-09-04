@@ -29,6 +29,7 @@ from core.integrity import (
 )
 from core.strategy import (
     adaptive_priority,
+    artifact_is_present,
     build_pareto_archive,
     build_process_metrics,
     compact_research_context,
@@ -154,6 +155,8 @@ def load_config() -> dict[str, Any]:
         config["worker_timeout_seconds"]
     ):
         raise ValueError("agent_idle_timeout_seconds must be within the worker timeout")
+    if not 5 <= int(config.get("agent_terminal_grace_seconds", 0)) <= 300:
+        raise ValueError("agent_terminal_grace_seconds must be between 5 and 300")
     search_mix = config.get("search_mix", {})
     explore_slots = int(search_mix.get("explore_slots", -1))
     exploit_slots = int(search_mix.get("exploit_slots", -1))
@@ -165,8 +168,12 @@ def load_config() -> dict[str, Any]:
         raise ValueError("max_hyperparameter_configs must be between 1 and 3")
     if int(config.get("directions_per_version", 0)) != 3:
         raise ValueError("directions_per_version must remain exactly 3")
+    if config.get("fixed_evaluation_cases") != {"linear": 50, "attention": 250}:
+        raise ValueError("formal evaluation must use all 50 Linear + 250 Attention cases")
     if not 1 <= int(config.get("environment_launch_retries", 1)) <= 3:
         raise ValueError("environment_launch_retries must be between 1 and 3")
+    if not isinstance(config.get("reference_cache_enabled"), bool):
+        raise ValueError("reference_cache_enabled must be a boolean")
     screening = config.get("screening", {})
     if screening.get("enabled", False):
         if int(screening.get("linear_groups", 0)) < 1:
@@ -342,6 +349,8 @@ def record_experiment(
     registry = read_json(REGISTRY_PATH)
     baseline = registry["versions"].get(task.get("based_on"), {})
     baseline_metrics = baseline.get("metrics") or {}
+    if not metrics_use_current_profile(baseline_metrics):
+        baseline_metrics = {}
     score = float(selected["total_score"])
     experiment = {
         "version": task["version"],
@@ -355,6 +364,9 @@ def record_experiment(
         "score_delta": score - float(baseline_metrics.get("score", score)),
         "linear_mse": selected["linear_output"]["mse"],
         "attention_mse": selected["attention_output"]["mse"],
+        "linear_case_count": int(selected["linear_case_count"]),
+        "attention_case_count": int(selected["attention_case_count"]),
+        "evaluation_profile": "F300",
         "linear_mse_delta": (
             float(selected["linear_output"]["mse"])
             - float(baseline_metrics.get("linear_mse", selected["linear_output"]["mse"]))
@@ -561,7 +573,7 @@ def policy_scaffold(task: dict[str, Any]) -> str:
 
 ## 基准版本
 
-对比基准版本：`{task['based_on']}`。先记录基准版本统一 300 例的 Linear MSE、Attention MSE 和最终得分。该字段只表示比较或实现来源，不形成父子关系。
+对比基准版本：`{task['based_on']}`。先记录基准版本的评测样例数、Linear MSE、Attention MSE 和按 300 例规模折算的最终得分。该字段只表示比较或实现来源，不形成父子关系。
 
 ## 实现基础
 
@@ -612,7 +624,7 @@ NVFP4 反量化固定为 E2M1 值乘对应 E4M3 scale，每 16 个连续值共�
 
 ## 算法内部超参数计划
 
-最多测试三组有理论依据的配置。说明参数含义、候选值和选择规则；配置先经 10 Linear + 50 Attention 筛选，最多两个进入完整 300 例；不得把纯调参拆成新版本。
+最多测试三组有理论依据的配置。说明参数含义、候选值和选择规则；所有配置使用固定 5 Linear + 5 Attention 正式样例评测，不得把纯调参拆成新版本。
 
 ## 实施步骤
 
@@ -637,7 +649,8 @@ def best_reference(registry: dict[str, Any]) -> str:
     for name, node in registry["versions"].items():
         metrics = node.get("metrics")
         if (
-            metrics_use_current_profile(metrics)
+            artifact_is_present(node)
+            and metrics_use_current_profile(metrics)
             and node.get("status") not in {
                 "failed", "draft", "evaluation_timeout", "invalid_after_evaluation"
             }
@@ -654,6 +667,7 @@ def best_score_state(registry: dict[str, Any]) -> tuple[str | None, float]:
         (name, float(node["metrics"]["score"]))
         for name, node in registry.get("versions", {}).items()
         if metrics_use_current_profile(node.get("metrics"))
+        and artifact_is_present(node)
         and node.get("status") not in {
             "failed", "draft", "environment_failed", "evaluation_timeout",
             "invalid_after_evaluation",
@@ -678,6 +692,11 @@ def reserve_algorithm(task: dict[str, Any], config: dict[str, Any]) -> None:
     based_on = task["based_on"]
     if based_on not in registry["versions"]:
         raise ValueError(f"unknown based_on version: {based_on}")
+    if (
+        task.get("implementation_base") == "based_on"
+        and not artifact_is_present(registry["versions"][based_on])
+    ):
+        raise ValueError(f"based_on solution artifact was pruned: {based_on}")
     version = task["version"]
     if not VERSION_RE.fullmatch(version):
         raise ValueError(f"invalid algorithm version name: {version}")
@@ -882,9 +901,12 @@ async def run_codex(
     session_id: str | None = None
     started = time.monotonic()
     last_progress = started
+    terminal_event_at: float | None = None
+    event_result: dict[str, Any] | None = None
+    terminal_fallback = False
 
     async def stdout_reader() -> None:
-        nonlocal session_id, last_progress
+        nonlocal session_id, last_progress, terminal_event_at, event_result
         with events_path.open("a", encoding="utf-8") as stream:
             while line := await process.stdout.readline():
                 last_progress = time.monotonic()
@@ -894,6 +916,21 @@ async def run_codex(
                 try:
                     event = json.loads(text)
                     session_id = session_id or extract_session(event)
+                    item = event.get("item", {})
+                    if (
+                        event.get("type") == "item.completed"
+                        and isinstance(item, dict)
+                        and item.get("type") == "agent_message"
+                        and isinstance(item.get("text"), str)
+                    ):
+                        try:
+                            parsed = json.loads(item["text"])
+                            if isinstance(parsed, dict):
+                                event_result = parsed
+                        except json.JSONDecodeError:
+                            pass
+                    if event.get("type") == "turn.completed" and event_result is not None:
+                        terminal_event_at = time.monotonic()
                 except json.JSONDecodeError:
                     pass
 
@@ -931,6 +968,14 @@ async def run_codex(
             if wait_task.done():
                 break
             moment = time.monotonic()
+            if (
+                terminal_event_at is not None
+                and moment - terminal_event_at
+                >= int(config.get("agent_terminal_grace_seconds", 30))
+            ):
+                terminal_fallback = True
+                await stop_child()
+                break
             if moment - started >= timeout:
                 timeout_reason = f"Codex step exceeded {timeout} seconds"
                 break
@@ -957,13 +1002,21 @@ async def run_codex(
         await asyncio.gather(*readers, return_exceptions=True)
     if timeout_reason:
         raise AgentExecutionTimeout(timeout_reason)
-    result = None
+    result = event_result
     if last_path.is_file():
         try:
             result = json.loads(last_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             result = None
     return_code = process.returncode or 0
+    if terminal_fallback and result is not None:
+        (run_dir / "terminal-fallback.log").write_text(
+            "Codex emitted a valid structured result and turn.completed but did not "
+            "exit within the configured grace period; the child was stopped and the "
+            "event-stream result was accepted.\n",
+            encoding="utf-8",
+        )
+        return_code = 0
     if return_code:
         stderr_tail = ""
         if stderr_path.is_file():
@@ -997,8 +1050,10 @@ def implementation_finalize_prompt(task: dict[str, Any]) -> str:
         "A previous implementation Agent timed out after writing substantial artifacts. "
         "Do not restart the research or redesign the algorithm. Read AGENTS.md, the policy "
         "skill, and the existing target version. Check policy.md, solution.py and optional "
-        "trials for completeness; repair only concrete syntax, interface, numerical-safety or "
-        "scope problems; run bounded non-official smoke checks; then return the worker-result "
+        "trials for completeness; use the task's prior error as mandatory repair feedback, "
+        "including missing evidence locations or policy/code mismatches. Repair only concrete "
+        "syntax, interface, numerical-safety, evidence, policy-alignment or scope problems; "
+        "run bounded non-official smoke checks; then return the worker-result "
         "JSON. Do not run datasets, create report.md, or propose follow-up algorithms.\n\n"
         "Target task:\n" + json.dumps(task, ensure_ascii=False, indent=2)
     )
@@ -1039,6 +1094,48 @@ def recoverable_implementation_artifacts(run_dir: Path, version: str) -> bool:
     return artifacts_exist and (
         (run_dir / "workspace-before.json").is_file() or legacy_audited
     )
+
+
+def recoverable_worker_result(run_dir: Path, version: str) -> bool:
+    """Return whether implementation output is valid and newer than its code."""
+    if not recoverable_implementation_artifacts(run_dir, version):
+        return False
+    worker_path = run_dir / "worker-result.json"
+    target = run_dir / "workspace" / "solution" / version
+    if not worker_path.is_file():
+        return False
+    try:
+        payload = read_json(worker_path)
+        result = payload.get("result") or {}
+        relevant = [target / "policy.md", target / "solution.py"]
+        relevant.extend((target / "trials").glob("*/solution.py") if (target / "trials").is_dir() else [])
+        newest_artifact = max(path.stat().st_mtime for path in relevant if path.is_file())
+        return (
+            result.get("status") == "implemented"
+            and worker_path.stat().st_mtime >= newest_artifact
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def recoverable_review_result(run_dir: Path, version: str) -> bool:
+    """Return whether a completed read-only structural approval can be reused."""
+    if not recoverable_worker_result(run_dir, version):
+        return False
+    worker_path = run_dir / "worker-result.json"
+    review_path = run_dir / "review" / "last-message.json"
+    if not review_path.is_file() or review_path.stat().st_mtime < worker_path.stat().st_mtime:
+        return False
+    try:
+        result = read_json(review_path)
+        checks = result.get("checks", {})
+        return (
+            result.get("status") == "approved"
+            and bool(checks)
+            and all(value is True for value in checks.values())
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
 
 
 def recoverable_report_checkpoint(run_dir: Path) -> bool:
@@ -1087,6 +1184,17 @@ def recoverable_record_checkpoint(run_dir: Path, version: str) -> bool:
             and bool(checkpoint.get("solution_sha256"))
         )
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def checkpoint_matches_current_formal_profile(
+    run_dir: Path, config: dict[str, Any], *, stages: set[str],
+) -> bool:
+    """Reject stale F10/F60 checkpoints after an evaluation-contract change."""
+    try:
+        validate_formal_checkpoint(run_dir, config, stages=stages)
+        return True
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError, json.JSONDecodeError):
         return False
 
 
@@ -1220,12 +1328,14 @@ async def run_evaluation_batch(
     attention_groups: int | None = None, skip_self_check: bool = False,
 ) -> list[dict[str, Any]]:
     output = run_dir / f"evaluation-{fidelity}.json"
+    output.unlink(missing_ok=True)
     command = [
         config.get("evaluation_python", sys.executable),
         str(AGENT_ROOT / "skills/hif4-evaluate/scripts/evaluate.py"),
         *(str(path) for _, path in candidates),
         "--datasets-dir", str(ROOT / config["evaluation_datasets_dir"]),
         "--json-output", str(output),
+        "--fidelity-label", fidelity,
     ]
     if linear_groups is not None:
         command.extend(["--linear-groups", str(linear_groups)])
@@ -1233,6 +1343,8 @@ async def run_evaluation_batch(
         command.extend(["--attention-groups", str(attention_groups)])
     if skip_self_check:
         command.append("--skip-self-check")
+    if not config.get("reference_cache_enabled", True):
+        command.append("--no-reference-cache")
 
     trust = protected_manifest(ROOT, config["protected_files"])
     dataset_manifest_path = ROOT / config["evaluation_datasets_dir"] / "manifest.json"
@@ -1345,6 +1457,8 @@ async def evaluate_candidates(
         raise ValueError(f"algorithm produced {len(candidates)} configurations; maximum is {limit}")
     screening_results: list[dict[str, Any]] = []
     formal_results: list[dict[str, Any]] = []
+    formal_linear_groups = int(config["fixed_evaluation_cases"]["linear"]) // 5
+    formal_attention_groups = int(config["fixed_evaluation_cases"]["attention"]) // 5
     async with evaluation_lock:
         with file_lock(EVALUATION_LOCK):
             screening = config.get("screening", {})
@@ -1372,10 +1486,14 @@ async def evaluate_candidates(
                 promoted = [item for item in candidates if item[0] in promoted_labels]
                 formal_results = await run_evaluation_batch(
                     config, promoted, run_dir, fidelity="formal", skip_self_check=True,
+                    linear_groups=formal_linear_groups,
+                    attention_groups=formal_attention_groups,
                 )
             else:
                 formal_results = await run_evaluation_batch(
                     config, candidates, run_dir, fidelity="formal",
+                    linear_groups=formal_linear_groups,
+                    attention_groups=formal_attention_groups,
                 )
             for result in formal_results:
                 validate_evaluation_case_counts(config, result)
@@ -1547,7 +1665,11 @@ def enqueue_followups(
         registry = read_json(REGISTRY_PATH)
         based_on = str(proposal.get("based_on") or task["version"])
         source = registry.get("versions", {}).get(based_on)
-        if not source or not metrics_use_current_profile(source.get("metrics")):
+        if (
+            not source
+            or not artifact_is_present(source)
+            or not metrics_use_current_profile(source.get("metrics"))
+        ):
             continue
         if mode == "exploit" and float(proposal.get("evidence_strength", 0.0)) < 0.6:
             continue
@@ -1642,6 +1764,14 @@ class Scheduler:
             and (run_dir / "workspace").is_dir()
             and recoverable_implementation_artifacts(run_dir, task["version"])
         )
+        resume_review = (
+            task.get("resume_stage") == "structural_review"
+            and recoverable_worker_result(run_dir, task["version"])
+        )
+        resume_evaluation = (
+            task.get("resume_stage") == "evaluation"
+            and recoverable_review_result(run_dir, task["version"])
+        )
         if resume_record:
             evaluation, selected = validate_formal_checkpoint(
                 run_dir, self.config, stages={"reported"},
@@ -1682,63 +1812,86 @@ class Scheduler:
                 shutil.copy2(selected_source, main_path)
             await self.update_task(task["task_id"], stage="reporting")
         else:
-            if resume_finalize:
+            if resume_review or resume_evaluation:
                 workspace = run_dir / "workspace"
                 sync_workspace_instructions(workspace)
                 workspace_before = recovery_workspace_baseline(
                     run_dir, workspace, task["version"],
                 )
-                implementation_run_dir = run_dir / f"finalize-{int(time.time())}"
-                prompt = implementation_finalize_prompt(task)
-                role = "finalize"
+                worker_payload = read_json(run_dir / "worker-result.json")
+                result = worker_payload.get("result")
+                if not result or result.get("status") != "implemented":
+                    raise RuntimeError("cannot resume: valid worker result is missing")
+                write_trust_manifest(run_dir, self.config, root_trust)
+                workspace_after_implementation = assert_workspace_scope(
+                    workspace, workspace_before, task["version"],
+                    context="recovered implementation",
+                )
+                assert_protected_unchanged(
+                    ROOT, root_trust, context="recovered implementation",
+                )
             else:
-                workspace = await asyncio.to_thread(create_workspace, run_dir)
-                workspace_before = tree_manifest(workspace)
-                atomic_json(run_dir / "workspace-before.json", {
-                    "schema_version": 1,
-                    "files": workspace_before,
-                    "resume_finalize": False,
-                    "recorded_at": now(),
+                if resume_finalize:
+                    workspace = run_dir / "workspace"
+                    sync_workspace_instructions(workspace)
+                    workspace_before = recovery_workspace_baseline(
+                        run_dir, workspace, task["version"],
+                    )
+                    implementation_run_dir = run_dir / f"finalize-{int(time.time())}"
+                    prompt = implementation_finalize_prompt(task)
+                    role = "finalize"
+                else:
+                    workspace = await asyncio.to_thread(create_workspace, run_dir)
+                    workspace_before = tree_manifest(workspace)
+                    atomic_json(run_dir / "workspace-before.json", {
+                        "schema_version": 1,
+                        "files": workspace_before,
+                        "resume_finalize": False,
+                        "recorded_at": now(),
+                    })
+                    implementation_run_dir = run_dir
+                    prompt = implementation_prompt(task)
+                    role = infer_search_mode(task)
+                # This stage precedes formal evaluation, so its eventual score
+                # is bound to the current contract rather than a stale one.
+                write_trust_manifest(run_dir, self.config, root_trust)
+                await self.update_task(task["task_id"], stage="implementing")
+                code, session, result = await run_codex(
+                    self.config, implementation_run_dir, prompt,
+                    SCHEMAS / "worker-result.schema.json",
+                    int(self.config["worker_timeout_seconds"]), workspace, role=role,
+                )
+                atomic_json(run_dir / "worker-result.json", {
+                    "session_id": session, "exit_code": code, "result": result,
                 })
-                implementation_run_dir = run_dir
-                prompt = implementation_prompt(task)
-                role = infer_search_mode(task)
-            # This stage precedes formal evaluation, so its eventual score must
-            # be bound to the current evaluation contract rather than a stale
-            # pre-recovery one.
-            write_trust_manifest(run_dir, self.config, root_trust)
-            await self.update_task(task["task_id"], stage="implementing")
-            code, session, result = await run_codex(
-                self.config, implementation_run_dir, prompt,
-                SCHEMAS / "worker-result.schema.json",
-                int(self.config["worker_timeout_seconds"]), workspace, role=role,
-            )
-            atomic_json(run_dir / "worker-result.json", {
-                "session_id": session, "exit_code": code, "result": result,
-            })
-            if result_is_environment_failure(result):
-                raise EnvironmentLaunchError(
-                    "Codex started, but its local tool process could not start: "
-                    + str(result.get("algorithm_summary", "unknown environment failure"))
+                if result_is_environment_failure(result):
+                    raise EnvironmentLaunchError(
+                        "Codex started, but its local tool process could not start: "
+                        + str(result.get("algorithm_summary", "unknown environment failure"))
+                    )
+                if code or not result or result.get("status") != "implemented":
+                    raise RuntimeError("implementation agent did not complete")
+                workspace_after_implementation = assert_workspace_scope(
+                    workspace, workspace_before, task["version"], context="implementation",
                 )
-            if code or not result or result.get("status") != "implemented":
-                raise RuntimeError("implementation agent did not complete")
-            workspace_after_implementation = assert_workspace_scope(
-                workspace, workspace_before, task["version"], context="implementation",
-            )
-            assert_protected_unchanged(ROOT, root_trust, context="implementation Agent")
-            await self.update_task(task["task_id"], stage="structural_review")
-            await structural_review(self.config, task, run_dir, workspace)
-            review_after = tree_manifest(workspace)
-            review_changes = [
-                path for path in set(workspace_after_implementation) | set(review_after)
-                if workspace_after_implementation.get(path) != review_after.get(path)
-            ]
-            if review_changes:
-                raise RuntimeError(
-                    "read-only structural reviewer modified files: "
-                    + ", ".join(sorted(review_changes))
+                assert_protected_unchanged(
+                    ROOT, root_trust, context="implementation Agent",
                 )
+            if not resume_evaluation:
+                await self.update_task(task["task_id"], stage="structural_review")
+                await structural_review(self.config, task, run_dir, workspace)
+                review_after = tree_manifest(workspace)
+                review_changes = [
+                    path for path in set(workspace_after_implementation) | set(review_after)
+                    if workspace_after_implementation.get(path) != review_after.get(path)
+                ]
+                if review_changes:
+                    raise RuntimeError(
+                        "read-only structural reviewer modified files: "
+                        + ", ".join(sorted(review_changes))
+                    )
+            elif not recoverable_review_result(run_dir, task["version"]):
+                raise RuntimeError("cannot resume: structural approval is missing or stale")
             import_version(workspace, task["version"])
             await self.update_task(task["task_id"], stage="evaluation")
             selected, evaluation = await evaluate_candidates(
@@ -2000,7 +2153,10 @@ class Scheduler:
                 continue
             queue, (best_version, best_score) = await self.load_ranked_queue()
             target_score = float(self.config["target_score"])
-            if best_score >= target_score:
+            if (
+                best_score >= target_score
+                and not self.config.get("continue_after_target", False)
+            ):
                 print(
                     f"target reached: {best_version} score={best_score:.6f} "
                     f">= {target_score:.6f}; new dispatch paused"
@@ -2200,24 +2356,71 @@ def backfill_completed(queue: dict[str, Any], config: dict[str, Any]) -> int:
 
 def recover_queue() -> int:
     """Requeue tasks left running by an interrupted scheduler."""
+    config = load_config()
     queue = load_queue()
     registry = read_json(REGISTRY_PATH)
+    queue_before = copy.deepcopy(queue)
+    registry_before = copy.deepcopy(registry)
     recovered = 0
+    pruned_changed = False
     for task in queue["tasks"]:
         task["search_mode"] = infer_search_mode(task)
         task["root_cause"] = task.get("root_cause") or task.get(
             "hypothesis", "unspecified root cause"
         )
-        error_text = str(task.get("error") or "").lower()
+        node = registry["versions"].get(task.get("version"), {})
+        if not artifact_is_present(node):
+            if task.get("status") == "queued":
+                task.update(
+                    status="pruned", stage="pruned",
+                    resume_run_id=None, resume_stage=None,
+                    error="solution artifact intentionally pruned",
+                    updated_at=now(),
+                )
+                pruned_changed = True
+            continue
+        run_dir = RUNS / str(task.get("run_id")) if task.get("run_id") else None
+        persisted_error = ""
+        if run_dir and (run_dir / "run.json").is_file():
+            try:
+                persisted_error = str(read_json(run_dir / "run.json").get("error") or "")
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                persisted_error = ""
+        error_text = (str(task.get("error") or "") + " " + persisted_error).lower()
         infrastructure_failure = any(marker in error_text for marker in (
             "winerror 2", "系统找不到指定的文件", "createprocesswithlogonw",
         ))
         interrupted_failure = task["status"] == "failed" and (
             not task.get("error") or infrastructure_failure
         )
-        if task["status"] not in {"running", "environment_failed", "workflow_failed"} and not interrupted_failure:
+        review_repairable_failure = (
+            task["status"] in {"failed", "queued"}
+            and (
+                (
+                    task["status"] == "failed"
+                    and task.get("failed_stage") in {"implementing", "structural_review"}
+                )
+                or "structural review rejected" in error_text
+            )
+            and bool(task.get("run_id"))
+            and recoverable_implementation_artifacts(
+                RUNS / str(task["run_id"]), task["version"]
+            )
+        )
+        upgradeable_recovery = (
+            task["status"] == "queued"
+            and task.get("resume_stage") in {
+                "implementation_finalize", "structural_review", "evaluation",
+            }
+        )
+        if (
+            task["status"] not in {"running", "environment_failed", "workflow_failed"}
+            and not interrupted_failure
+            and not review_repairable_failure
+            and not upgradeable_recovery
+        ):
             continue
-        node = registry["versions"].get(task.get("version"), {})
+        task_before = copy.deepcopy(task)
         if node:
             node["search_mode"] = task.get("search_mode", infer_search_mode(task))
             node["root_cause"] = task.get("root_cause", task.get("hypothesis"))
@@ -2229,6 +2432,9 @@ def recover_queue() -> int:
             task.get("run_id")
             and recoverable_record_checkpoint(
                 RUNS / str(task["run_id"]), task["version"]
+            )
+            and checkpoint_matches_current_formal_profile(
+                RUNS / str(task["run_id"]), config, stages={"reported"}
             )
         ):
             task.update(
@@ -2242,11 +2448,55 @@ def recover_queue() -> int:
         elif (
             task.get("run_id")
             and recoverable_report_checkpoint(RUNS / str(task["run_id"]))
+            and checkpoint_matches_current_formal_profile(
+                RUNS / str(task["run_id"]), config, stages={"formal_evaluated"}
+            )
         ):
             task.update(
                 status="queued", stage="queued",
                 resume_run_id=task["run_id"], resume_stage="reporting",
                 error="recovered at report checkpoint",
+            )
+            if node and node.get("metrics") is None:
+                node["status"] = "draft"
+                node.pop("failure", None)
+        elif review_repairable_failure:
+            task.update(
+                status="queued", stage="queued",
+                resume_run_id=task["run_id"],
+                resume_stage="implementation_finalize",
+                error=(
+                    "recovered for mandatory structural-review repair: "
+                    + (persisted_error or str(task.get("error") or "unknown review failure"))
+                ),
+            )
+            if node and node.get("metrics") is None:
+                node["status"] = "draft"
+                node.pop("failure", None)
+        elif (
+            task.get("run_id")
+            and recoverable_review_result(
+                RUNS / str(task["run_id"]), task["version"]
+            )
+        ):
+            task.update(
+                status="queued", stage="queued",
+                resume_run_id=task["run_id"], resume_stage="evaluation",
+                error="recovered approved structural review for fixed evaluation",
+            )
+            if node and node.get("metrics") is None:
+                node["status"] = "draft"
+                node.pop("failure", None)
+        elif (
+            task.get("run_id")
+            and recoverable_worker_result(
+                RUNS / str(task["run_id"]), task["version"]
+            )
+        ):
+            task.update(
+                status="queued", stage="queued",
+                resume_run_id=task["run_id"], resume_stage="structural_review",
+                error="recovered completed implementation for structural review",
             )
             if node and node.get("metrics") is None:
                 node["status"] = "draft"
@@ -2275,9 +2525,10 @@ def recover_queue() -> int:
             if node and node.get("metrics") is None:
                 node["status"] = "draft"
                 node.pop("failure", None)
-        task["updated_at"] = now()
-        recovered += 1
-    if recovered:
+        if task != task_before:
+            task["updated_at"] = now()
+            recovered += 1
+    if queue != queue_before or registry != registry_before or pruned_changed:
         save_queue(queue)
         atomic_json(REGISTRY_PATH, registry)
     return recovered
@@ -2328,10 +2579,13 @@ def doctor(*, deep: bool = False) -> int:
         "evaluation_cases": config["fixed_evaluation_cases"] == {"linear": 50, "attention": 250},
         "screening_profile": (
             screening.get("enabled") is True
-            and screening.get("linear_cases") == 10
-            and screening.get("attention_cases") == 50
-            and 1 <= int(screening.get("promote_top_k", 0)) <= 3
+            and (
+                screening.get("linear_cases") == 10
+                and screening.get("attention_cases") == 50
+                and 1 <= int(screening.get("promote_top_k", 0)) <= 3
+            )
         ),
+        "reference_cache": config.get("reference_cache_enabled") is True,
         "lightweight_snapshots": all(
             name in config.get("isolation", {}).get("ignore", [])
             for name in ("datasets", "reference")
@@ -2448,7 +2702,8 @@ def main() -> int:
                 print(
                     f"target={target_score:.6f} best={best_score:.6f} "
                     f"best_version={best_version} "
-                    f"gap={max(0.0, target_score - best_score):.6f}"
+                    f"gap={max(0.0, target_score - best_score):.6f} "
+                    f"continue_after_target={bool(config.get('continue_after_target', False))}"
                 )
                 mode_counts: dict[str, dict[str, int]] = {}
                 for task in queue["tasks"]:

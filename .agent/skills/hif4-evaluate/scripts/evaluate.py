@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import importlib.util
 import json
 import math
+import os
 import subprocess
 import sys
 import tempfile
@@ -18,12 +20,15 @@ import torch
 from scoring import (
     ATTENTION_SCORE_WEIGHT,
     LINEAR_SCORE_WEIGHT,
+    SCORE_SCALE_CASES,
     weighted_total_score,
 )
 
 
 ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_ARCHIVE = ROOT / "reference" / "本地调试参考-0818.zip"
+CACHE_SCHEMA_VERSION = 1
+CACHE_ALGORITHM_VERSION = "cpu-reference-v1"
 
 
 def load_module(name: str, path: Path) -> Any:
@@ -76,7 +81,12 @@ def mse(reference: torch.Tensor, candidate: torch.Tensor) -> float:
 
 def case_metrics(reference: torch.Tensor, standard: torch.Tensor,
                  candidate: torch.Tensor) -> dict[str, float]:
-    mse_standard = mse(reference, standard)
+    return case_metrics_from_standard_mse(reference, candidate, mse(reference, standard))
+
+
+def case_metrics_from_standard_mse(
+    reference: torch.Tensor, candidate: torch.Tensor, mse_standard: float,
+) -> dict[str, float]:
     mse_player = mse(reference, candidate)
     ratio = (mse_standard - mse_player) / max(mse_standard, 1e-30)
     return {
@@ -85,6 +95,153 @@ def case_metrics(reference: torch.Tensor, standard: torch.Tensor,
         "score_ratio": ratio,
         "score_percentage_points": 100.0 * ratio,
     }
+
+
+def _reference_cache_key(datasets_dir: Path) -> str:
+    manifest = datasets_dir / "manifest.json"
+    if manifest.is_file():
+        dataset_identity = manifest.read_bytes()
+    else:
+        dataset_identity = "|".join(
+            f"{name}:{(datasets_dir / name).stat().st_size}:"
+            f"{(datasets_dir / name).stat().st_mtime_ns}"
+            for name in ("linear.pt", "attn.pt")
+        ).encode("utf-8")
+    material = b"|".join((
+        str(CACHE_SCHEMA_VERSION).encode("ascii"),
+        CACHE_ALGORITHM_VERSION.encode("ascii"),
+        torch.__version__.encode("ascii"),
+        dataset_identity,
+    ))
+    return hashlib.sha256(material).hexdigest()[:20]
+
+
+class ReferenceCache:
+    """Cache candidate-independent CPU reference outputs by dataset group."""
+
+    def __init__(self, datasets_dir: Path, *, enabled: bool = True) -> None:
+        self.enabled = enabled
+        self.key = _reference_cache_key(datasets_dir)
+        self.root = ROOT / ".agent" / "runtime" / "reference-cache" / self.key
+        self.memory: dict[tuple[str, int], dict[str, Any]] = {}
+        self.hits = 0
+        self.misses = 0
+        self.build_seconds = 0.0
+        self.load_seconds = 0.0
+
+    def _valid(
+        self, value: Any, kind: str, group_index: int, expected_cases: int,
+    ) -> bool:
+        return bool(
+            isinstance(value, dict)
+            and value.get("schema_version") == CACHE_SCHEMA_VERSION
+            and value.get("cache_key") == self.key
+            and value.get("kind") == kind
+            and value.get("group_index") == group_index
+            and isinstance(value.get("cases"), list)
+            and len(value["cases"]) == expected_cases
+        )
+
+    def get(
+        self, kind: str, group_index: int, expected_cases: int, builder: Any,
+    ) -> dict[str, Any]:
+        identity = (kind, group_index)
+        if identity in self.memory:
+            self.hits += 1
+            return self.memory[identity]
+        path = self.root / kind / f"{group_index:03d}.pt"
+        if self.enabled and path.is_file():
+            tick = time.perf_counter()
+            try:
+                value = torch.load(path, weights_only=True, map_location="cpu")
+            except (OSError, RuntimeError, ValueError):
+                value = None
+            self.load_seconds += time.perf_counter() - tick
+            if self._valid(value, kind, group_index, expected_cases):
+                self.hits += 1
+                self.memory[identity] = value
+                return value
+
+        tick = time.perf_counter()
+        cases = builder()
+        self.build_seconds += time.perf_counter() - tick
+        value = {
+            "schema_version": CACHE_SCHEMA_VERSION,
+            "cache_key": self.key,
+            "kind": kind,
+            "group_index": group_index,
+            "cases": cases,
+        }
+        if not self._valid(value, kind, group_index, expected_cases):
+            raise RuntimeError(f"invalid {kind} reference cache payload for group {group_index}")
+        self.misses += 1
+        self.memory[identity] = value
+        if self.enabled:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(f".pt.{os.getpid()}.tmp")
+            torch.save(value, temporary)
+            os.replace(temporary, path)
+        return value
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "cache_key": self.key,
+            "memory_groups": len(self.memory),
+            "hits": self.hits,
+            "misses": self.misses,
+            "build_seconds": self.build_seconds,
+            "load_seconds": self.load_seconds,
+        }
+
+
+def build_linear_reference_cases(group: Any) -> list[dict[str, Any]]:
+    weight = decode_nvfp4(group["weight_quant"], group["weight_scale"])
+    standard_weight = standard_hif4(weight)
+    cases = []
+    for aq, scale in group["test_activation_list"]:
+        activation = decode_nvfp4(aq, scale)
+        reference = activation @ weight.T
+        standard = standard_hif4(activation) @ standard_weight.T
+        cases.append({
+            "reference": reference.contiguous(),
+            "mse_standard": mse(reference, standard),
+        })
+    return cases
+
+
+def build_attention_reference_cases(group: Any) -> list[dict[str, Any]]:
+    qh = group["q_num_heads"]
+    kvh = group["kv_num_heads"]
+    dim = group["head_dim"]
+    repeat = qh // kvh
+    cases = []
+    for sample in group["test"]:
+        q, k, value = (decode_nvfp4(*sample[name]) for name in ("q", "k", "v"))
+        seq = q.shape[0]
+        q = q.reshape(seq, qh, dim).transpose(0, 1)
+        k = k.reshape(seq, kvh, dim).transpose(0, 1).repeat_interleave(repeat, 0)
+        value = value.reshape(seq, kvh, dim).transpose(0, 1).repeat_interleave(repeat, 0)
+        logits = q @ k.transpose(-1, -2) / math.sqrt(dim)
+        reference = torch.softmax(logits, -1) @ value
+
+        standard_q = standard_hif4(q.transpose(0, 1).reshape(seq, -1))
+        standard_k = standard_hif4(
+            k[::repeat].transpose(0, 1).reshape(seq, -1)
+        )
+        standard_v = standard_hif4(
+            value[::repeat].transpose(0, 1).reshape(seq, -1)
+        )
+        sq = standard_q.reshape(seq, qh, dim).transpose(0, 1)
+        sk = standard_k.reshape(seq, kvh, dim).transpose(0, 1).repeat_interleave(repeat, 0)
+        sv = standard_v.reshape(seq, kvh, dim).transpose(0, 1).repeat_interleave(repeat, 0)
+        standard_logits = sq @ sk.transpose(-1, -2) / math.sqrt(dim)
+        standard = torch.softmax(standard_logits, -1) @ sv
+        cases.append({
+            "reference": reference.contiguous(),
+            "mse_standard": mse(reference, standard),
+        })
+    return cases
 
 
 class StreamingMSE:
@@ -157,7 +314,11 @@ def evaluate(
     candidate_path: Path,
     linear: list[tuple[int, Any]],
     attention: list[tuple[int, Any]],
+    reference_cache: ReferenceCache,
 ) -> dict[str, Any]:
+    reference_seconds_before = (
+        reference_cache.build_seconds + reference_cache.load_seconds
+    )
     module = load_module(f"candidate_{abs(hash(candidate_path))}", candidate_path)
     linear_outputs = StreamingMSE()
     attention_outputs = StreamingMSE()
@@ -168,14 +329,20 @@ def evaluate(
     timings = {
         "linear_calibration_seconds": 0.0,
         "linear_cases_seconds": 0.0,
+        "linear_dynamic_quantization_seconds": 0.0,
+        "linear_output_metric_seconds": 0.0,
         "attention_calibration_seconds": 0.0,
         "attention_cases_seconds": 0.0,
+        "attention_dynamic_quantization_seconds": 0.0,
+        "attention_output_metric_seconds": 0.0,
     }
     started = time.perf_counter()
 
     for group_index, group in linear:
-        weight = decode_nvfp4(group["weight_quant"], group["weight_scale"])
-        standard_weight = standard_hif4(weight)
+        cached = reference_cache.get(
+            "linear", group_index, len(group["test_activation_list"]),
+            lambda group=group: build_linear_reference_cases(group),
+        )
         tick = time.perf_counter()
         calibrated = module.hif4_calibration_and_quantize_weight(
             group["weight_quant"], group["weight_scale"],
@@ -186,24 +353,37 @@ def evaluate(
         state = calibrated["activation_state"]
         tick = time.perf_counter()
         for sample_index, (aq, scale) in enumerate(group["test_activation_list"]):
-            activation = decode_nvfp4(aq, scale)
+            dynamic_tick = time.perf_counter()
             quantized_activation = decode_hif4(
                 module.hif4_dynamic_quantize_activation(aq, scale, state)
             )
-            reference_output = activation @ weight.T
-            standard_output = standard_hif4(activation) @ standard_weight.T
+            timings["linear_dynamic_quantization_seconds"] += (
+                time.perf_counter() - dynamic_tick
+            )
+            metric_tick = time.perf_counter()
             player_output = quantized_activation @ quantized_weight.T
+            reference_output = cached["cases"][sample_index]["reference"]
             linear_outputs.update(reference_output, player_output)
-            detail = case_metrics(reference_output, standard_output, player_output)
+            detail = case_metrics_from_standard_mse(
+                reference_output, player_output,
+                float(cached["cases"][sample_index]["mse_standard"]),
+            )
             detail.update(group_index=group_index, sample_index=sample_index)
             linear_cases.append(detail)
             linear_scores.append(detail["score_ratio"])
+            timings["linear_output_metric_seconds"] += (
+                time.perf_counter() - metric_tick
+            )
         timings["linear_cases_seconds"] += time.perf_counter() - tick
 
     for group_index, group in attention:
         qh = group["q_num_heads"]
         kvh = group["kv_num_heads"]
         dim = group["head_dim"]
+        cached = reference_cache.get(
+            "attention", group_index, len(group["test"]),
+            lambda group=group: build_attention_reference_cases(group),
+        )
         tick = time.perf_counter()
         states = module.hif4_calibration_attention(
             group["calib"], qh, kvh, dim
@@ -211,7 +391,7 @@ def evaluate(
         timings["attention_calibration_seconds"] += time.perf_counter() - tick
         tick = time.perf_counter()
         for sample_index, sample in enumerate(group["test"]):
-            q0, k0, v_reference = (decode_nvfp4(*sample[x]) for x in ("q", "k", "v"))
+            dynamic_tick = time.perf_counter()
             q1 = decode_hif4(module.hif4_dynamic_quantize_q(
                 *sample["q"], qh, dim, states["q_state"]
             ))
@@ -221,41 +401,44 @@ def evaluate(
             v_candidate = decode_hif4(module.hif4_dynamic_quantize_v(
                 *sample["v"], kvh, dim, states["v_state"]
             ))
-            seq = q0.shape[0]
+            timings["attention_dynamic_quantization_seconds"] += (
+                time.perf_counter() - dynamic_tick
+            )
+            metric_tick = time.perf_counter()
+            seq = q1.shape[0]
             repeat = qh // kvh
-            q0 = q0.reshape(seq, qh, dim).transpose(0, 1)
             q1 = q1.reshape(seq, qh, dim).transpose(0, 1)
-            k0 = k0.reshape(seq, kvh, dim).transpose(0, 1).repeat_interleave(repeat, 0)
             k1 = k1.reshape(seq, kvh, dim).transpose(0, 1).repeat_interleave(repeat, 0)
-            v_reference = v_reference.reshape(seq, kvh, dim).transpose(0, 1).repeat_interleave(repeat, 0)
             v_candidate = v_candidate.reshape(seq, kvh, dim).transpose(0, 1).repeat_interleave(repeat, 0)
-            logits0 = q0 @ k0.transpose(-1, -2) / math.sqrt(dim)
             logits1 = q1 @ k1.transpose(-1, -2) / math.sqrt(dim)
-            reference_output = torch.softmax(logits0, -1) @ v_reference
             player_output = torch.softmax(logits1, -1) @ v_candidate
+            reference_output = cached["cases"][sample_index]["reference"]
             attention_outputs.update(reference_output, player_output)
-            standard_q = standard_hif4(q0.transpose(0, 1).reshape(seq, -1))
-            standard_k = standard_hif4(
-                k0[::repeat].transpose(0, 1).reshape(seq, -1)
+            detail = case_metrics_from_standard_mse(
+                reference_output, player_output,
+                float(cached["cases"][sample_index]["mse_standard"]),
             )
-            standard_v = standard_hif4(
-                v_reference[::repeat].transpose(0, 1).reshape(seq, -1)
-            )
-            sq = standard_q.reshape(seq, qh, dim).transpose(0, 1)
-            sk = standard_k.reshape(seq, kvh, dim).transpose(0, 1).repeat_interleave(repeat, 0)
-            sv = standard_v.reshape(seq, kvh, dim).transpose(0, 1).repeat_interleave(repeat, 0)
-            standard_logits = sq @ sk.transpose(-1, -2) / math.sqrt(dim)
-            standard_output = torch.softmax(standard_logits, -1) @ sv
-            detail = case_metrics(reference_output, standard_output, player_output)
             detail.update(group_index=group_index, sample_index=sample_index)
             attention_cases.append(detail)
             attention_scores.append(detail["score_ratio"])
+            timings["attention_output_metric_seconds"] += (
+                time.perf_counter() - metric_tick
+            )
         timings["attention_cases_seconds"] += time.perf_counter() - tick
 
+    wall_seconds = time.perf_counter() - started
+    reference_seconds = max(
+        0.0,
+        reference_cache.build_seconds
+        + reference_cache.load_seconds
+        - reference_seconds_before,
+    )
     total_score = weighted_total_score(linear_scores, attention_scores)
     return {
         "path": str(candidate_path),
-        "seconds": time.perf_counter() - started,
+        "seconds": max(0.0, wall_seconds - reference_seconds),
+        "wall_seconds": wall_seconds,
+        "reference_seconds": reference_seconds,
         "linear_output": linear_outputs.result(),
         "attention_output": attention_outputs.result(),
         "linear_score": sum(linear_scores),
@@ -275,6 +458,7 @@ def evaluate(
             "linear": LINEAR_SCORE_WEIGHT,
             "attention": ATTENTION_SCORE_WEIGHT,
         },
+        "score_scale_case_count": SCORE_SCALE_CASES,
         "case_count": len(linear_scores) + len(attention_scores),
         "linear_case_count": len(linear_scores),
         "attention_case_count": len(attention_scores),
@@ -327,8 +511,16 @@ def main() -> int:
         help="write machine-readable evaluation results to this JSON file",
     )
     parser.add_argument(
+        "--fidelity-label", choices=("formal", "screening", "manual"),
+        help="explicitly label the result without changing the selected groups",
+    )
+    parser.add_argument(
         "--skip-self-check", action="store_true",
         help="跳过官方输出格式检查，只计算本地 MSE 与得分",
+    )
+    parser.add_argument(
+        "--no-reference-cache", action="store_true",
+        help="compute candidate-independent references in memory without disk reuse",
     )
     args = parser.parse_args()
     results: list[dict[str, Any]] = []
@@ -356,11 +548,14 @@ def main() -> int:
             attention = select_groups(attention_all, args.attention_groups)
         except ValueError as error:
             parser.error(str(error))
+        reference_cache = ReferenceCache(
+            datasets_dir, enabled=not args.no_reference_cache,
+        )
         for path in args.solutions:
             path = path.resolve()
             if not args.skip_self_check:
                 # Validate interfaces and shapes on the compact official suite.
-                # Using the 300-case scoring set here would execute it twice.
+                # This check is separate from the fixed numeric evaluation.
                 completed = subprocess.run([
                     sys.executable,
                     str(example / "self_check.py"),
@@ -369,9 +564,9 @@ def main() -> int:
                 ], cwd=ROOT)
                 if completed.returncode:
                     return completed.returncode
-            result = evaluate(path, linear, attention)
+            result = evaluate(path, linear, attention, reference_cache)
             result["datasets_dir"] = str(datasets_dir)
-            result["evaluation_fidelity"] = (
+            result["evaluation_fidelity"] = args.fidelity_label or (
                 "full"
                 if len(linear) == len(linear_all) and len(attention) == len(attention_all)
                 else "screening"
@@ -379,10 +574,17 @@ def main() -> int:
             print_result(result)
             results.append(result)
             gc.collect()
+    cache_diagnostics = reference_cache.diagnostics()
+    for result in results:
+        result["reference_cache"] = cache_diagnostics
     if args.json_output:
         args.json_output.parent.mkdir(parents=True, exist_ok=True)
         args.json_output.write_text(
-            json.dumps({"schema_version": 1, "results": results}, indent=2) + "\n",
+            json.dumps({
+                "schema_version": 2,
+                "reference_cache": cache_diagnostics,
+                "results": results,
+            }, indent=2) + "\n",
             encoding="utf-8",
         )
     return 0

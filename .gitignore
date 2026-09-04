@@ -3,7 +3,8 @@ __pycache__/
 .agent/runtime/
 .agent/STOP
 
-# Publish only the retained v0 method catalog.
+# Main keeps only the retained v0 method catalog; scored submissions use the
+# dedicated submission branch.
 solution/*
 !solution/v0_hessian_repair/
 !solution/v0_hessian_repair/**

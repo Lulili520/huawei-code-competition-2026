@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": 1,
+  "revision": 18,
   "principles": [
     {
       "id": "immutable_evaluator_boundary",
@@ -22,7 +22,7 @@
       "statement": "内部配置先用固定代表性子集筛选，只让领先配置进入完整 300 例正式评测；正式登记只接受完整评测结果。",
       "rationale": "多保真门禁减少明显无效候选占用昂贵正式评测的时间，同时保留统一最终口径。",
       "status": "core",
-      "support_count": 1,
+      "support_count": 2,
       "contradiction_count": 0,
       "sources": [
         {
@@ -30,6 +30,12 @@
           "year": 2025,
           "url": "https://github.com/algorithmicsuperintelligence/openevolve"
         }
+      ],
+      "evidence_runs": [
+        "45ab19b5c2fb-1788433413"
+      ],
+      "supporting_families": [
+        "error_budgeted_hif4_hierarchy"
       ]
     },
     {
@@ -37,7 +43,7 @@
       "statement": "保留得分、Linear MSE、Attention MSE 与运行时间上的非支配版本，不把单一最高分当作唯一可复用起点。",
       "rationale": "Linear 专项、Attention 专项和速度较快的实现可能为不同后续策略提供更合适的基础。",
       "status": "core",
-      "support_count": 1,
+      "support_count": 2,
       "contradiction_count": 0,
       "sources": [
         {
@@ -50,6 +56,12 @@
           "year": 2025,
           "url": "https://github.com/algorithmicsuperintelligence/openevolve"
         }
+      ],
+      "evidence_runs": [
+        "38dbe3679d12-1788438788"
+      ],
+      "supporting_families": [
+        "softmax_trust_region_repair"
       ]
     },
     {
@@ -110,6 +122,66 @@
           "year": 2026,
           "url": "https://github.com/scaling-group/eve"
         }
+      ]
+    },
+    {
+      "id": "output_aligned_tail_proxy",
+      "statement": "局部尾部代理在扩展复杂搜索前，应同时证明与输出级 minimum、P10、均值和综合分方向一致；单个最差 case 修复不足以判定成功。",
+      "rationale": "tail_guard 把 Attention minimum 从 -12.413506626430895 提升至 9.375600139226707并清零负收益，却使 P10、mean、两项 MSE和总分相对 conservative 全部退化；该单次实验仅构成候选证据。",
+      "status": "candidate",
+      "support_count": 1,
+      "contradiction_count": 0,
+      "sources": [],
+      "supporting_families": [
+        "error_budgeted_hif4_hierarchy"
+      ],
+      "evidence_runs": [
+        "45ab19b5c2fb-1788433413"
+      ]
+    },
+    {
+      "id": "aggregate_gate_requires_crossfold_stability",
+      "statement": "候选原则：静态Attention门禁在扩展前应验证跨折、逐样例归一化损失的选择稳定性，不能只依赖一次切分的aggregate SSE。",
+      "rationale": "单次实验中heldout aggregate SSE下降21.2542400360107，但正式Attention MSE增加1.00495092137645e-07、得分下降1.05951891567383；该结论目前仅是一条候选证据。",
+      "status": "candidate",
+      "support_count": 1,
+      "contradiction_count": 0,
+      "sources": [],
+      "supporting_families": [
+        "joint_centered_qk_curvature_repair"
+      ],
+      "evidence_runs": [
+        "47efd49f1c57-1788442985"
+      ]
+    },
+    {
+      "id": "exact_invariance_before_discrete_search",
+      "statement": "量化前优先使用严格保持浮点目标的逆缩放、互逆基变换或共同排列，再把剩余误差交给合法离散搜索。",
+      "rationale": "v22组合在完整300例上同时降低Linear与Attention MSE；等价变换本身在量化前不引入目标偏差，但独立贡献仍需消融。",
+      "status": "candidate",
+      "support_count": 1,
+      "contradiction_count": 0,
+      "sources": [],
+      "supporting_families": [
+        "reciprocal_transform_consumer_weighted_discrete_repair"
+      ],
+      "evidence_runs": [
+        "adopt-v22-reciprocal-consumer-stack"
+      ]
+    },
+    {
+      "id": "consumer_aligned_legal_code_objective",
+      "statement": "候选码字必须保持HiF4合法，并优先按照最终Linear或Attention消费者风险排序，而不是只按中间张量重建误差排序。",
+      "rationale": "带输出Hessian、中心化Softmax与P^TP风险的组合取得21673.257105856967分，较v6提高5113.941609096524。",
+      "status": "candidate",
+      "support_count": 1,
+      "contradiction_count": 0,
+      "sources": [],
+      "supporting_families": [
+        "reciprocal_transform_consumer_weighted_discrete_repair"
+      ],
+      "evidence_runs": [
+        "adopt-v22-reciprocal-consumer-stack"
       ]
     }
   ]

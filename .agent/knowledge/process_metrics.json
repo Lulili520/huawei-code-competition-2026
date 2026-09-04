@@ -1,19 +1,20 @@
 {
   "schema_version": 1,
   "reference_versions": 1,
-  "evaluated_versions": 2,
-  "positive_versions": 2,
-  "positive_rate": 1.0,
-  "new_global_bests": 1,
-  "formal_evaluation_seconds": 1312.1927287010476,
-  "positive_score_gain": 138.724341618469,
-  "positive_score_gain_per_evaluation_hour": 380.5901518147086,
-  "screening_comparisons": 0,
+  "evaluated_versions": 8,
+  "positive_versions": 4,
+  "positive_rate": 0.5,
+  "new_global_bests": 3,
+  "formal_evaluation_seconds": 5783.296544902027,
+  "positive_score_gain": 5313.5235573765685,
+  "positive_score_gain_per_evaluation_hour": 3307.574608709556,
+  "screening_comparisons": 1,
   "screening_winner_agreements": 0,
-  "screening_winner_agreement_rate": null,
-  "stagnation_length": 1,
+  "screening_winner_agreement_rate": 0.0,
+  "stagnation_length": 0,
   "non_evaluation_outcomes": {
-    "workflow_failed": 3
+    "failed": 16,
+    "workflow_failed": 16
   },
   "families": {
     "softmax_aware_qk": {
@@ -43,7 +44,7 @@
       "mean_score_delta": 0.0,
       "positive_rate": 0.0
     },
-    "error_budgeted_hif4_hierarchy": {
+    "activation_whitened_linear_blocks": {
       "attempts": 1,
       "evaluated": 0,
       "positive": 0,
@@ -52,7 +53,322 @@
       "mean_score_delta": 0.0,
       "positive_rate": 0.0
     },
-    "activation_whitened_linear_blocks": {
+    "paired_qk_error_cancellation": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "error_budgeted_hif4_hierarchy": {
+      "attempts": 1,
+      "evaluated": 1,
+      "positive": 0,
+      "score_delta_sum": -3164.8560390973253,
+      "seconds": 639.6066026994959,
+      "mean_score_delta": -3164.8560390973253,
+      "positive_rate": 0.0
+    },
+    "attention_weighted_value_transport": {
+      "attempts": 1,
+      "evaluated": 1,
+      "positive": 0,
+      "score_delta_sum": -61.41965232955408,
+      "seconds": 534.1898585008457,
+      "mean_score_delta": -61.41965232955408,
+      "positive_rate": 0.0
+    },
+    "softmax_trust_region_repair": {
+      "attempts": 1,
+      "evaluated": 1,
+      "positive": 1,
+      "score_delta_sum": 60.85760666157512,
+      "seconds": 557.2493703998625,
+      "mean_score_delta": 60.85760666157512,
+      "positive_rate": 1.0
+    },
+    "explicit_linear_cross_term_alternating_repair": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "term_attributed_linear_joint_repair": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "distributionally_robust_multishape_value_transport": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "softmax_vpath_joint_acceptance": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "clipping_resolution_attribution_router": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "joint_clipping_resolution_dp": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "distributionally_robust_softmax_gate": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "sequence_invariant_exact_v_output_repair": {
+      "attempts": 1,
+      "evaluated": 1,
+      "positive": 0,
+      "score_delta_sum": -186.7171907064403,
+      "seconds": 781.3195019001141,
+      "mean_score_delta": -186.7171907064403,
+      "positive_rate": 0.0
+    },
+    "joint_centered_qk_curvature_repair": {
+      "attempts": 1,
+      "evaluated": 1,
+      "positive": 0,
+      "score_delta_sum": -1.0595189156738343,
+      "seconds": 816.354621199891,
+      "mean_score_delta": -1.0595189156738343,
+      "positive_rate": 0.0
+    },
+    "centered_logit_mode_joint_qk_repair": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "cross_fitted_normalized_attention_gate": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "counterfactual_clipping_resolution_router": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "reciprocal_transform_consumer_weighted_discrete_repair": {
+      "attempts": 1,
+      "evaluated": 1,
+      "positive": 1,
+      "score_delta_sum": 5113.941609096524,
+      "seconds": 1142.3838615007699,
+      "mean_score_delta": 5113.941609096524,
+      "positive_rate": 1.0
+    },
+    "global_output_error_budget_allocator": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "krylov_value_consumer_solver": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "consumer_gated_format_error_decomposition": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "crossfit_exact_softmax_pair_policy": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "format_decomposed_legal_lattice_repair": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "calibration_compiled_repair_schedule": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "joint_attention_output_tangent_solver": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "cross_fitted_component_safe_format_router": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "crossfit_counterfactual_qk_solver": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "consumer_aligned_hierarchical_format_solver": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "certified_cost_routed_consumer_stack": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "jacobian_conditioned_joint_qkv_distillation": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "output_causal_format_bifurcation": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "format_error_causal_dual_code_router": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "non_submodular_signed_hyperbundle_router": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "pathwise_output_certified_consumer_stack": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "factorial_exact_output_path_router": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "dual_pareto_exact_expert_router": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "interaction_aware_coalition_router": {
       "attempts": 1,
       "evaluated": 0,
       "positive": 0,
@@ -62,5 +378,25 @@
       "positive_rate": 0.0
     }
   },
-  "updated_at": "2026-09-03T12:07:39.506873+00:00"
+  "search_modes": {
+    "exploit": {
+      "attempts": 11,
+      "evaluated": 4,
+      "positive": 3,
+      "score_delta_sum": 198.52242936437028,
+      "seconds": 2685.796720300801,
+      "mean_score_delta": 49.63060734109257,
+      "positive_rate": 0.75
+    },
+    "explore": {
+      "attempts": 29,
+      "evaluated": 4,
+      "positive": 1,
+      "score_delta_sum": 1700.9487269632045,
+      "seconds": 3097.4998246012256,
+      "mean_score_delta": 425.23718174080113,
+      "positive_rate": 0.25
+    }
+  },
+  "updated_at": "2026-09-04T07:13:53.212445+00:00"
 }

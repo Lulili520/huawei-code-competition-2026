@@ -28,8 +28,9 @@ huawei_competition/
 │       └── manifest.json       # 数量、大小和SHA-256
 ├── solution/
 │   ├── v0_hessian_repair/      # 已完成300例评测的固定基线
-│   ├── v0_softmax_aware_qk/    # 当前300例综合最优
-│   ├── v0_alternating_joint_fit/ # 当前300例Linear MSE最优
+│   ├── v0_softmax_aware_qk/    # Softmax感知对照
+│   ├── v0_alternating_joint_fit/ # Linear联合拟合对照
+│   ├── v22_reciprocal_consumer_stack/ # 当前F300综合最优
 │   └── vN_<method>/            # 后续实验版本
 ├── docs/                       # 项目调研与数学分析
 └── reference/                  # 任务书、官方资料和原始测试分卷（不提交Git）
@@ -47,6 +48,9 @@ D:\Miniconda3\envs\huawei_competition_2026\python.exe .agent/skills/hif4-evaluat
 Runner 对同一算法的 3 个内部配置采用分级评测：先在等距抽取的 10 个
 Linear + 50 个 Attention 上筛选，再让前 2 名进入完整 300 例。一到两组配置
 直接完整评测。一个阶段的全部配置共用一次大数据加载；只有完整结果进入版本账本。
+评测器还按数据集哈希缓存与候选无关的浮点参考输出和标准编码误差；缓存只省去
+重复计算，不减少样例、不缓存候选输出，也不改变 MSE 或计分。缓存位于
+`.agent/runtime/reference-cache/`，数据或评测语义变化时会自动使用新的缓存键。
 
 从 `reference/test_sample/` 重新生成统一数据：
 
@@ -90,11 +94,11 @@ Linear 的三项误差传播、Attention 的中心化 logits/Softmax Jacobian/V 
 `audit` 进一步报告筛选冠军一致率、正收益率、停滞长度和单位正式评测小时的正向分数增量，用真实运行数据评估流程本身。
 
 Codex 工作进程使用 `--ignore-user-config --ephemeral`，显式指定模型、角色推理
-强度和 service tier，避免用户级 MCP 或历史会话干扰；600 秒没有事件即按空闲
+强度和 service tier，避免用户级 MCP 或历史会话干扰；1800 秒没有事件即按空闲
 超时处理。若实现已留下足够产物，`recover` 从 `implementation_finalize` 继续；
 若完整评测已写入 checkpoint，则只恢复报告、后续方向和登记，不重复跑 300 例。
-当且仅当某个完整 300 例正式得分达到 `20000` 时，Runner 自动停止新派发，
-已经开始的任务会安全收尾。
+`20000` 只是完整 300 例的阶段目标，不会自动停止新派发；Runner 持续迭代，
+直到用户显式执行 `pause` 或结束流程。
 
 项目当前保留暂停标记 `.agent/STOP`。`seed` 只建立初始任务，`resume` 后执行
 `run` 才会开始持续迭代。

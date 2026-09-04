@@ -76,6 +76,25 @@ class RunnerTest(unittest.TestCase):
         registry = runner.read_json(self.registry_path)
         self.assertEqual(runner.next_version("softmax_aware", registry), "v1_softmax_aware")
 
+    def test_best_reference_ignores_pruned_artifact(self) -> None:
+        registry = runner.read_json(self.registry_path)
+        registry["versions"]["v1_pruned"] = {
+            "number": 1,
+            "method": "pruned",
+            "status": "evaluated",
+            "artifact_state": "pruned",
+            "metrics": {
+                "linear_mse": 0.01,
+                "attention_mse": 0.01,
+                "score": 999.0,
+                "linear_case_count": 50,
+                "attention_case_count": 250,
+                "dataset": "datasets/combined",
+            },
+        }
+        self.assertEqual(runner.best_reference(registry), "v0_hessian_repair")
+        self.assertEqual(runner.best_score_state(registry), ("v0_hessian_repair", 1.0))
+
     def test_version_record_has_no_tree_fields(self) -> None:
         queue = runner.initial_queue()
         runner.add_algorithm_task(
@@ -148,6 +167,24 @@ class RunnerTest(unittest.TestCase):
             asyncio.run(runner.Scheduler(self.config, dry_run=True, once=True).loop())
         self.assertIn("target reached", output.getvalue())
         self.assertFalse(self.stop.exists())
+
+    def test_continue_after_target_still_dispatches(self) -> None:
+        registry = runner.read_json(self.registry_path)
+        registry["versions"]["v0_hessian_repair"]["metrics"]["score"] = 20000.0
+        runner.atomic_json(self.registry_path, registry)
+        queue = runner.initial_queue()
+        runner.add_algorithm_task(
+            queue, self.config, based_on="v0_hessian_repair",
+            version="v1_structural", focus="linear", family="structural_repair",
+            hypothesis="change the output error model", base="based_on", priority=1.0,
+        )
+        runner.save_queue(queue)
+        config = {**self.config, "continue_after_target": True}
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            asyncio.run(runner.Scheduler(config, dry_run=True, once=True).loop())
+        self.assertIn("DRY-RUN slot=1", output.getvalue())
+        self.assertNotIn("target reached", output.getvalue())
 
     def test_dry_run_is_non_mutating_and_capped_at_six_slots(self) -> None:
         queue = runner.initial_queue()
@@ -292,6 +329,78 @@ class RunnerTest(unittest.TestCase):
         recovered = runner.load_queue()["tasks"][0]
         self.assertEqual(recovered["resume_stage"], "implementation_finalize")
         self.assertEqual(recovered["resume_run_id"], "recover-run")
+        self.assertEqual(runner.recover_queue(), 0)
+
+    def test_recover_prefers_approved_review_over_reimplementation(self) -> None:
+        queue = runner.initial_queue()
+        task = runner.add_algorithm_task(
+            queue, self.config, based_on="v0_hessian_repair",
+            version="v1_reviewed", focus="attention", family="reviewed_method",
+            hypothesis="reuse an approved structural implementation",
+            base="based_on", priority=0.5,
+        )
+        task.update(status="running", stage="structural_review", run_id="reviewed-run")
+        runner.save_queue(queue)
+        run_dir = self.runs / "reviewed-run"
+        target = run_dir / "workspace" / "solution" / task["version"]
+        target.mkdir(parents=True)
+        (target / "policy.md").write_text("p" * 512, encoding="utf-8")
+        (target / "solution.py").write_text("s" * 512, encoding="utf-8")
+        runner.atomic_json(run_dir / "workspace-before.json", {
+            "files": runner.tree_manifest(run_dir / "workspace"),
+        })
+        runner.atomic_json(run_dir / "worker-result.json", {
+            "result": {"status": "implemented"},
+        })
+        runner.atomic_json(run_dir / "review" / "last-message.json", {
+            "status": "approved", "checks": {"structure": True}, "reasons": [],
+        })
+        self.assertEqual(runner.recover_queue(), 1)
+        recovered = runner.load_queue()["tasks"][0]
+        self.assertEqual(recovered["resume_stage"], "evaluation")
+        self.assertIn("approved structural review", recovered["error"])
+
+    def test_recover_structural_review_rejection_uses_existing_artifacts(self) -> None:
+        queue = runner.initial_queue()
+        task = runner.add_algorithm_task(
+            queue, self.config, based_on="v0_hessian_repair",
+            version="v1_review_repair", focus="linear", family="review_repair",
+            hypothesis="repair a structurally valid implementation after review feedback",
+            base="based_on", priority=0.5,
+        )
+        task.update(
+            status="failed", stage="failed",
+            run_id="review-run", error="structural review rejected: evidence location is missing",
+        )
+        runner.save_queue(queue)
+        target = self.runs / "review-run" / "workspace" / "solution" / task["version"]
+        target.mkdir(parents=True)
+        (target / "policy.md").write_text("p" * 512, encoding="utf-8")
+        (target / "solution.py").write_text("s" * 512, encoding="utf-8")
+        runner.atomic_json(self.runs / "review-run" / "workspace-before.json", {
+            "files": runner.tree_manifest(self.runs / "review-run" / "workspace"),
+        })
+        self.assertEqual(runner.recover_queue(), 1)
+        recovered = runner.load_queue()["tasks"][0]
+        self.assertEqual(recovered["resume_stage"], "implementation_finalize")
+        self.assertIn("mandatory structural-review repair", recovered["error"])
+
+    def test_recover_does_not_requeue_pruned_artifact(self) -> None:
+        queue = runner.initial_queue()
+        task = runner.add_algorithm_task(
+            queue, self.config, based_on="v0_hessian_repair",
+            version="v1_pruned", focus="linear", family="pruned_method",
+            hypothesis="historical implementation should remain pruned",
+            base="based_on", priority=0.5,
+        )
+        task.update(status="workflow_failed", stage="agent_timeout", run_id="pruned-run")
+        runner.save_queue(queue)
+        registry = runner.read_json(self.registry_path)
+        registry["versions"][task["version"]]["artifact_state"] = "pruned"
+        runner.atomic_json(self.registry_path, registry)
+        self.assertEqual(runner.recover_queue(), 0)
+        recovered = runner.load_queue()["tasks"][0]
+        self.assertEqual(recovered["status"], "workflow_failed")
 
     def test_stale_runner_pid_is_removed(self) -> None:
         runner.RUNNER_PID_PATH.write_text("99999999\n", encoding="utf-8")
@@ -317,8 +426,8 @@ class RunnerTest(unittest.TestCase):
     def test_evaluation_rejects_wrong_case_count(self) -> None:
         with self.assertRaises(RuntimeError):
             runner.validate_evaluation_case_counts(self.config, {
-                "linear_case_count": 5,
-                "attention_case_count": 5,
+                "linear_case_count": 10,
+                "attention_case_count": 50,
             })
 
     def test_evaluation_accepts_combined_case_count(self) -> None:
@@ -376,8 +485,17 @@ class RunnerTest(unittest.TestCase):
     def test_legacy_metrics_are_not_a_current_reference(self) -> None:
         self.assertFalse(runner.metrics_use_current_profile({
             "score": 999.0,
-            "linear_case_count": 5,
-            "attention_case_count": 5,
+            "linear_case_count": 10,
+            "attention_case_count": 50,
+            "dataset": "datasets/combined",
+        }))
+
+    def test_historical_full_metrics_remain_comparable(self) -> None:
+        self.assertTrue(runner.metrics_use_current_profile({
+            "score": 999.0,
+            "linear_case_count": 50,
+            "attention_case_count": 250,
+            "dataset": "datasets/combined",
         }))
 
 
