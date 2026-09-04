@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "checks", "reasons"],
+  "properties": {
+    "status": {"type": "string", "enum": ["approved", "rejected"]},
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["structural_algorithm", "fixed_nvfp4_decode", "evidence_chain", "write_scope", "complexity_bound", "diagnostic_plan"],
+      "properties": {
+        "structural_algorithm": {"type": "boolean"},
+        "fixed_nvfp4_decode": {"type": "boolean"},
+        "evidence_chain": {"type": "boolean"},
+        "write_scope": {"type": "boolean"},
+        "complexity_bound": {"type": "boolean"},
+        "diagnostic_plan": {"type": "boolean"}
+      }
+    },
+    "reasons": {"type": "array", "items": {"type": "string"}}
+  }
+}

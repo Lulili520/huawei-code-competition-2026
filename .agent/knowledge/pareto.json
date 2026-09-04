@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "objectives": {
+    "score": "maximize",
+    "linear_mse": "minimize",
+    "attention_mse": "minimize",
+    "seconds": "minimize"
+  },
+  "front": [
+    {
+      "version": "v0_softmax_aware_qk",
+      "algorithm_family": "softmax_aware_qk",
+      "score": 16498.457890098867,
+      "linear_mse": 0.005876365662724178,
+      "attention_mse": 0.0003740420031498385,
+      "seconds": 626.4658948006108
+    },
+    {
+      "version": "v0_alternating_joint_fit",
+      "algorithm_family": "alternating_joint_fit",
+      "score": 16407.289265704094,
+      "linear_mse": 0.005690795642146364,
+      "attention_mse": 0.0003786237067026048,
+      "seconds": 685.7268339004368
+    },
+    {
+      "version": "v0_hessian_repair",
+      "algorithm_family": "hessian_repair",
+      "score": 16383.511407092246,
+      "linear_mse": 0.005876365662724178,
+      "attention_mse": 0.0003786237067026048,
+      "seconds": 514.8921692995355
+    }
+  ],
+  "champions": {
+    "score": "v0_softmax_aware_qk",
+    "linear_mse": "v0_alternating_joint_fit",
+    "attention_mse": "v0_softmax_aware_qk",
+    "seconds": "v0_hessian_repair"
+  },
+  "updated_at": "2026-09-03T09:41:03.920276+00:00"
+}

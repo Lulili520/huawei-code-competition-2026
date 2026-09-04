@@ -1012,7 +1012,7 @@ def _crossblock_hessian_repair(
 
 
 def _linear_state_valid(state: Any, channels: int) -> bool:
-    if not isinstance(state, dict) or state.get("schema") != "alternating-joint-v2":
+    if not isinstance(state, dict) or state.get("schema") != "alternating-joint-v2_softmax_aware_qk":
         return False
     if float(state.get("min_proxy_gain", -1.0)) != _LINEAR_GAIN:
         return False
@@ -1211,7 +1211,7 @@ def hif4_calibration_and_quantize_weight(
     return {
         "weight_params": weight_params,
         "activation_state": {
-            "schema": "alternating-joint-v2",
+            "schema": "alternating-joint-v2_softmax_aware_qk",
             "precondition_scale": precondition.cpu(),
             "activation_importance": activation_importance.cpu(),
             "min_proxy_gain": _LINEAR_GAIN,
@@ -1248,7 +1248,7 @@ def _attention_fallback_state(
     common = {
         "selected_alpha": _ATTENTION_ALPHA,
         "rotation_group_size": 0,
-        "rotation_reason": "stable-v3-basis-no-rotation",
+        "rotation_reason": "stable-v3_output_aware_linear-basis-no-rotation",
         "min_proxy_gain": _ATTENTION_GAIN,
         "fallback_to_parent": True,
     }
@@ -1482,7 +1482,7 @@ def hif4_calibration_attention(
             "smooth_scale": q_smooth.flatten().cpu(),
             "selected_alpha": _ATTENTION_ALPHA,
             "rotation_group_size": 0,
-            "rotation_reason": "stable-v3-basis-no-rotation",
+            "rotation_reason": "stable-v3_output_aware_linear-basis-no-rotation",
             "importance": q_importance.flatten().cpu(),
             "min_proxy_gain": _ATTENTION_GAIN,
             "proxy_role": "q-error-weighted-by-k-second-moment",
@@ -1494,7 +1494,7 @@ def hif4_calibration_attention(
             "smooth_scale": kv_smooth.flatten().cpu(),
             "selected_alpha": _ATTENTION_ALPHA,
             "rotation_group_size": 0,
-            "rotation_reason": "stable-v3-basis-no-rotation",
+            "rotation_reason": "stable-v3_output_aware_linear-basis-no-rotation",
             "importance": k_importance.flatten().cpu(),
             "min_proxy_gain": _ATTENTION_GAIN,
             "proxy_role": "k-error-weighted-by-gqa-q-second-moment",

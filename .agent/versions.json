@@ -1,0 +1,191 @@
+{
+  "schema_version": 2,
+  "versioning": "flat-sequential",
+  "baseline_scheme": "multi-v0-method-catalog",
+  "score_weights": {
+    "linear": 1.0,
+    "attention": 5.0
+  },
+  "evaluation_profile": {
+    "dataset": "datasets/combined",
+    "linear_cases": 50,
+    "attention_cases": 250,
+    "score_unit": "percentage_points"
+  },
+  "screening_profile": {
+    "purpose": "internal_config_promotion_only",
+    "selection": "deterministic_evenly_spaced_groups",
+    "linear_cases": 10,
+    "attention_cases": 50,
+    "promote_top_k": 2,
+    "register_score": false
+  },
+  "versions": {
+    "v0_hessian_repair": {
+      "number": 0,
+      "method": "hessian_repair",
+      "based_on": null,
+      "status": "baseline",
+      "metrics": {
+        "linear_mse": 0.005876365662724178,
+        "attention_mse": 0.0003786237067026048,
+        "score": 16383.511407092246,
+        "seconds": 514.8921692995355,
+        "linear_case_count": 50,
+        "attention_case_count": 250,
+        "dataset": "datasets/combined"
+      }
+    },
+    "v0_softmax_aware_qk": {
+      "number": 0,
+      "method": "softmax_aware_qk",
+      "based_on": "v0_hessian_repair",
+      "status": "best",
+      "metrics": {
+        "linear_mse": 0.005876365662724178,
+        "attention_mse": 0.0003740420031498385,
+        "score": 16498.457890098867,
+        "seconds": 626.4658948006108,
+        "linear_case_count": 50,
+        "attention_case_count": 250,
+        "dataset": "datasets/combined"
+      },
+      "historical_metrics": {
+        "profile": "official-mini-5-linear-5-attention",
+        "linear_mse": 0.0025332271610921716,
+        "attention_mse": 0.0003291976436547344,
+        "raw_ratio_sum": 4.925249423296513
+      }
+    },
+    "v0_alternating_joint_fit": {
+      "number": 0,
+      "method": "alternating_joint_fit",
+      "based_on": "v0_hessian_repair",
+      "historical_source": "removed:v3_output_aware_linear",
+      "status": "linear_best",
+      "metrics": {
+        "linear_mse": 0.005690795642146364,
+        "attention_mse": 0.0003786237067026048,
+        "score": 16407.289265704094,
+        "seconds": 685.7268339004368,
+        "linear_case_count": 50,
+        "attention_case_count": 250,
+        "dataset": "datasets/combined"
+      },
+      "historical_metrics": {
+        "profile": "official-mini-5-linear-5-attention",
+        "linear_mse": 0.0024909474165506766,
+        "attention_mse": 0.0003321123805816656,
+        "raw_ratio_sum": 4.888527474350488
+      }
+    },
+    "v1_discrete_attention_output_search": {
+      "number": 1,
+      "method": "discrete_attention_output_search",
+      "based_on": "v0_softmax_aware_qk",
+      "focus": "attention",
+      "algorithm_family": "discrete_attention_output_search",
+      "implementation_base": "based_on",
+      "hypothesis": "直接以校准 softmax 输出误差联合选择合法 Q/K HiF4 块参数，可减少张量 MSE 与注意力输出目标错位",
+      "structural_change": "把独立 Q/K 局部选择替换为受预算约束的联合离散坐标搜索，并以注意力输出损失接受或回退候选。",
+      "target_metric": "attention_mse",
+      "falsification": "完整评测 Attention MSE 不低于 v0_softmax_aware_qk，或运行时间越过预算。",
+      "proposal_fingerprint": "93cb54bfea4a30b3eec9",
+      "status": "draft",
+      "metrics": null,
+      "task_id": "a7e9aa5f0ab6",
+      "search_mode": "explore",
+      "root_cause": "独立最小化 Q/K 张量误差忽略逐行平移不变性和 Softmax Jacobian，局部 MSE 与最终 Attention 输出损失错位。"
+    },
+    "v2_activation_whitened_linear_blocks": {
+      "number": 2,
+      "method": "activation_whitened_linear_blocks",
+      "based_on": "v0_alternating_joint_fit",
+      "focus": "linear",
+      "algorithm_family": "activation_whitened_linear_blocks",
+      "implementation_base": "based_on",
+      "hypothesis": "在保持矩阵乘等价的互逆变换中显式压平激活协方差，再做块量化，可降低高相关通道主导的 Linear 输出误差",
+      "structural_change": "依据校准二阶矩构造受 HiF4 分组约束的可逆预条件，再在变换域联合量化权重与激活。",
+      "target_metric": "linear_mse",
+      "falsification": "完整评测 Linear MSE 不低于 v0_alternating_joint_fit，且综合分或耗时明显退化。",
+      "proposal_fingerprint": "229079c2732a98da520d",
+      "status": "draft",
+      "metrics": null,
+      "task_id": "8ffd498d29a1",
+      "search_mode": "exploit",
+      "root_cause": "Linear 中 ΔXWᵀ 与 XΔWᵀ 沿激活协方差主方向被放大，独立量化两侧无法控制交叉项。"
+    },
+    "v3_error_budgeted_hierarchy": {
+      "number": 3,
+      "method": "error_budgeted_hierarchy",
+      "based_on": "v0_hessian_repair",
+      "focus": "format",
+      "algorithm_family": "error_budgeted_hif4_hierarchy",
+      "implementation_base": "scratch",
+      "hypothesis": "把 LV2/LV3 的局部范围选择改为下游敏感度约束的层级误差预算，可减少少数高损失 case 的主导误差",
+      "structural_change": "从零构造合法 HiF4 层级参数选择器，将每层离散决策写成受共享关系约束的误差预算分配。",
+      "target_metric": "combined",
+      "falsification": "筛选阶段负收益 case 数未下降，或完整综合分不超过实现基线。",
+      "proposal_fingerprint": "03633c49e30a3f6856cc",
+      "status": "draft",
+      "metrics": null,
+      "task_id": "45ab19b5c2fb",
+      "search_mode": "explore",
+      "root_cause": "同一 64/8/4 值层级中离群值与主体值争用离散共享尺度，使削顶和小值分辨率不足集中在少数高损失块。"
+    },
+    "v4_paired_qk_error_cancellation": {
+      "number": 4,
+      "method": "paired_qk_error_cancellation",
+      "based_on": "v0_softmax_aware_qk",
+      "focus": "attention",
+      "algorithm_family": "paired_qk_error_cancellation",
+      "implementation_base": "based_on",
+      "search_mode": "explore",
+      "hypothesis": "联合选择成对的合法 Q/K 离散修复，使一阶和二阶 logit 误差在逐行去均值后相互抵消，可降低 Softmax 输入的有效扰动。",
+      "root_cause": "Q 与 K 独立编码产生的 ΔQKᵀ、QΔKᵀ 和 ΔQΔKᵀ 在中心化 logit 空间可能同向叠加；单侧张量误差或单侧 Hessian 无法主动利用两侧误差抵消。",
+      "structural_change": "显式计算中心化 ΔQKᵀ+QΔKᵀ+ΔQΔKᵀ，并用有界成对匹配替代独立 Q/K repair 接受，从误差相关性而非各自幅值选择编码。",
+      "target_metric": "attention_mse",
+      "falsification": "成对候选接受率接近零，或完整评测中心化 logit 代理下降但 Attention MSE 不低于 v0_softmax_aware_qk。",
+      "proposal_fingerprint": "1e89e66380a9e509c369",
+      "status": "draft",
+      "metrics": null,
+      "task_id": "c2d63c4f90a8"
+    },
+    "v5_attention_weighted_value_transport": {
+      "number": 5,
+      "method": "attention_weighted_value_transport",
+      "based_on": "v0_softmax_aware_qk",
+      "focus": "attention",
+      "algorithm_family": "attention_weighted_value_transport",
+      "implementation_base": "based_on",
+      "search_mode": "explore",
+      "hypothesis": "用校准注意力矩阵诱导的 AᵀA 度量选择合法 V 层级参数，把离散误差迁移到低可见方向，可降低最终 Attention 输出误差。",
+      "root_cause": "V 的元素级量化误差只有经注意力矩阵 A 传播后的 AΔV 才影响输出；当前 V 编码没有区分 AᵀA 的高敏感方向与近零空间。",
+      "structural_change": "从校准 Q/K 构造每头的注意力传输 Gram，并以 ||AΔV||² 而非 ||ΔV||² 驱动 V 的块级 scale/LV2/LV3 与 mant 候选选择，保留无收益回退。",
+      "target_metric": "attention_mse",
+      "falsification": "AᵀA 加权候选与原编码等价或回退占绝大多数，或完整 Attention MSE/综合分不优于 v0_softmax_aware_qk。",
+      "proposal_fingerprint": "e361824d7bb720b93938",
+      "status": "draft",
+      "metrics": null,
+      "task_id": "4ec32352b42d"
+    },
+    "v6_softmax_trust_region_repair": {
+      "number": 6,
+      "method": "softmax_trust_region_repair",
+      "based_on": "v0_softmax_aware_qk",
+      "focus": "attention",
+      "algorithm_family": "softmax_trust_region_repair",
+      "implementation_base": "based_on",
+      "search_mode": "exploit",
+      "hypothesis": "保留已验证的 Softmax-aware 候选生成，在独立校准切分上用真实输出损失和中心化 logit 半径做按头信赖域接受，可稳定深化已有收益。",
+      "root_cause": "v0 的局部 Softmax 曲率已带来正式正收益，但离散 repair 可能越出二阶近似可靠区域；缺少按头的真实校准输出门禁来拒绝代理失真的更新。",
+      "structural_change": "在 v0_softmax_aware_qk 的 Hessian repair 外增加校准数据分割、按头局部信赖域和精确 Attention 输出接受/回退；不扩大候选数量，不改变固定格式。",
+      "target_metric": "attention_mse",
+      "falsification": "真实门禁几乎总回退，或完整 Attention MSE/综合分未超过 v0_softmax_aware_qk，或额外校准耗时超过预算。",
+      "proposal_fingerprint": "04cb3b965b7452756278",
+      "status": "draft",
+      "metrics": null,
+      "task_id": "38dbe3679d12"
+    }
+  }
+}

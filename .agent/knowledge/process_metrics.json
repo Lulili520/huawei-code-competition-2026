@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "reference_versions": 1,
+  "evaluated_versions": 2,
+  "positive_versions": 2,
+  "positive_rate": 1.0,
+  "new_global_bests": 1,
+  "formal_evaluation_seconds": 1312.1927287010476,
+  "positive_score_gain": 138.724341618469,
+  "positive_score_gain_per_evaluation_hour": 380.5901518147086,
+  "screening_comparisons": 0,
+  "screening_winner_agreements": 0,
+  "screening_winner_agreement_rate": null,
+  "stagnation_length": 1,
+  "non_evaluation_outcomes": {
+    "workflow_failed": 3
+  },
+  "families": {
+    "softmax_aware_qk": {
+      "attempts": 1,
+      "evaluated": 1,
+      "positive": 1,
+      "score_delta_sum": 114.946483006621,
+      "seconds": 626.4658948006108,
+      "mean_score_delta": 114.946483006621,
+      "positive_rate": 1.0
+    },
+    "alternating_joint_fit": {
+      "attempts": 1,
+      "evaluated": 1,
+      "positive": 1,
+      "score_delta_sum": 23.777858611848,
+      "seconds": 685.7268339004368,
+      "mean_score_delta": 23.777858611848,
+      "positive_rate": 1.0
+    },
+    "discrete_attention_output_search": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "error_budgeted_hif4_hierarchy": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    },
+    "activation_whitened_linear_blocks": {
+      "attempts": 1,
+      "evaluated": 0,
+      "positive": 0,
+      "score_delta_sum": 0.0,
+      "seconds": 0.0,
+      "mean_score_delta": 0.0,
+      "positive_rate": 0.0
+    }
+  },
+  "updated_at": "2026-09-03T12:07:39.506873+00:00"
+}

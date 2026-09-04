@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "revision": 4,
+  "experiments": [
+    {
+      "version": "v0_hessian_repair",
+      "algorithm_family": "hessian_repair",
+      "focus": "combined",
+      "baseline": null,
+      "baseline_score": null,
+      "score": 16383.511407092246,
+      "score_delta": 0.0,
+      "linear_mse": 0.005876365662724178,
+      "attention_mse": 0.0003786237067026048,
+      "seconds": 514.8921692995355,
+      "outcome": "evaluated",
+      "new_global_best": false,
+      "completed_at": "2026-09-03T00:00:00+00:00",
+      "takeaways": [
+        "六个接口和合法 HiF4 输出格式可作为稳定起点。",
+        "根版本没有消融对照，不能把总效果归因于单个模块。"
+      ]
+    },
+    {
+      "version": "v0_softmax_aware_qk",
+      "algorithm_family": "softmax_aware_qk",
+      "focus": "attention",
+      "baseline": "v0_hessian_repair",
+      "baseline_score": 16383.511407092246,
+      "score": 16498.457890098867,
+      "score_delta": 114.946483006621,
+      "linear_mse": 0.005876365662724178,
+      "attention_mse": 0.0003740420031498385,
+      "linear_mse_delta": 0.0,
+      "attention_mse_delta": -4.5817035527663e-06,
+      "seconds": 626.4658948006108,
+      "outcome": "evaluated",
+      "new_global_best": true,
+      "completed_at": "2026-09-03T00:01:00+00:00",
+      "takeaways": [
+        "Attention 候选应按 softmax 输出影响评估，而不只比较 Q/K 张量重构误差。",
+        "精度提升伴随更长耗时，平台时限仍需单独验证。"
+      ]
+    },
+    {
+      "version": "v0_alternating_joint_fit",
+      "algorithm_family": "alternating_joint_fit",
+      "focus": "linear",
+      "baseline": "v0_hessian_repair",
+      "baseline_score": 16383.511407092246,
+      "score": 16407.289265704094,
+      "score_delta": 23.777858611848,
+      "linear_mse": 0.005690795642146364,
+      "attention_mse": 0.0003786237067026048,
+      "linear_mse_delta": -0.000185570020577814,
+      "attention_mse_delta": 0.0,
+      "seconds": 685.7268339004368,
+      "outcome": "evaluated",
+      "new_global_best": false,
+      "completed_at": "2026-09-03T00:02:00+00:00",
+      "takeaways": [
+        "Linear 中激活量化和权重量化是耦合问题，交替更新优于只固定一侧拟合。",
+        "Linear 专项收益未超过 Attention 路线对综合分的贡献。"
+      ]
+    },
+    {
+      "version": "v1_discrete_attention_output_search",
+      "algorithm_family": "discrete_attention_output_search",
+      "focus": "attention",
+      "baseline": "v0_softmax_aware_qk",
+      "outcome": "workflow_failed",
+      "failure": "Codex step exceeded 3600 seconds",
+      "run_id": "a7e9aa5f0ab6-1788433413",
+      "completed_at": "2026-09-03T12:03:34.094032+00:00"
+    },
+    {
+      "version": "v3_error_budgeted_hierarchy",
+      "algorithm_family": "error_budgeted_hif4_hierarchy",
+      "focus": "format",
+      "baseline": "v0_hessian_repair",
+      "outcome": "workflow_failed",
+      "failure": "Codex step exceeded 3600 seconds",
+      "run_id": "45ab19b5c2fb-1788433413",
+      "completed_at": "2026-09-03T12:03:34.103514+00:00"
+    },
+    {
+      "version": "v2_activation_whitened_linear_blocks",
+      "algorithm_family": "activation_whitened_linear_blocks",
+      "focus": "linear",
+      "baseline": "v0_alternating_joint_fit",
+      "outcome": "workflow_failed",
+      "failure": "report agent did not produce report.md",
+      "run_id": "8ffd498d29a1-1788433413",
+      "completed_at": "2026-09-03T12:07:39.505322+00:00"
+    }
+  ]
+}

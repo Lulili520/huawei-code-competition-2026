@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "max_agents": 6,
+  "target_score": 20000.0,
+  "directions_per_version": 3,
+  "max_hyperparameter_configs": 3,
+  "conda_env": "huawei_competition_2026",
+  "evaluation_python": "D:\\Miniconda3\\envs\\huawei_competition_2026\\python.exe",
+  "worker_timeout_seconds": 3600,
+  "agent_idle_timeout_seconds": 600,
+  "evaluation_timeout_seconds": 1800,
+  "screening_timeout_seconds": 900,
+  "evaluation_datasets_dir": "datasets/combined",
+  "environment_launch_retries": 3,
+  "codex": {
+    "command": "C:\\Users\\Administrator\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
+    "model": "gpt-5.6-sol",
+    "sandbox": "danger-full-access",
+    "ignore_user_config": true,
+    "ephemeral": true,
+    "search": true,
+    "service_tier": "priority",
+    "reasoning_effort": {
+      "explore": "high",
+      "exploit": "max",
+      "review": "high",
+      "report": "high",
+      "finalize": "high"
+    }
+  },
+  "search_mix": {
+    "explore_slots": 4,
+    "exploit_slots": 2
+  },
+  "isolation": {
+    "mode": "snapshot",
+    "ignore": [".git", ".agent/runtime", "datasets", "reference", "__pycache__", "*.pyc"]
+  },
+  "screening": {
+    "enabled": true,
+    "linear_groups": 2,
+    "attention_groups": 10,
+    "linear_cases": 10,
+    "attention_cases": 50,
+    "promote_top_k": 2
+  },
+  "protected_files": [
+    "AGENTS.md",
+    ".agent/runner.py",
+    ".agent/config.json",
+    ".agent/core/integrity.py",
+    ".agent/core/strategy.py",
+    ".agent/prompts/implement.md",
+    ".agent/prompts/review.md",
+    ".agent/prompts/report.md",
+    ".agent/schemas/worker-result.schema.json",
+    ".agent/schemas/review-result.schema.json",
+    ".agent/schemas/report-result.schema.json",
+    ".agent/skills/hif4-evaluate/scripts/evaluate.py",
+    ".agent/skills/hif4-evaluate/scripts/scoring.py",
+    ".agent/skills/hif4-evaluate/SKILL.md",
+    ".agent/skills/hif4-policy/SKILL.md",
+    ".agent/skills/hif4-report/SKILL.md",
+    ".agent/skills/hif4-version/SKILL.md",
+    "datasets/combined/manifest.json",
+    "solution/v0_hessian_repair/solution.py",
+    "solution/v0_softmax_aware_qk/solution.py",
+    "solution/v0_alternating_joint_fit/solution.py"
+  ],
+  "fixed_evaluation_cases": {
+    "linear": 50,
+    "attention": 250
+  }
+}

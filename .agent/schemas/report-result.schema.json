@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "report_path",
+    "hypothesis_outcomes",
+    "takeaways",
+    "next_algorithms",
+    "principle_updates"
+  ],
+  "properties": {
+    "status": {"type": "string", "enum": ["written", "failed"]},
+    "report_path": {"type": "string"},
+    "hypothesis_outcomes": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["hypothesis", "status", "evidence"],
+        "properties": {
+          "hypothesis": {"type": "string"},
+          "status": {
+            "type": "string",
+            "enum": ["结果支持", "结果否证", "证据不足"]
+          },
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "takeaways": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "statement", "evidence"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["positive", "negative", "boundary"]
+          },
+          "statement": {"type": "string"},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "next_algorithms": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "algorithm_family", "version_suffix", "based_on", "search_mode",
+          "focus", "root_cause", "hypothesis", "implementation_base",
+          "structural_change", "evidence", "evidence_strength", "novelty",
+          "uncertainty", "expected_cost", "target_metric", "falsification"
+        ],
+        "properties": {
+          "algorithm_family": {"type": "string", "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$"},
+          "version_suffix": {"type": "string", "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$"},
+          "based_on": {"type": "string", "pattern": "^v[0-9]+_[a-z0-9]+(?:_[a-z0-9]+)*$"},
+          "search_mode": {"type": "string", "enum": ["explore", "exploit"]},
+          "focus": {"type": "string", "enum": ["linear", "attention", "format", "combined"]},
+          "root_cause": {"type": "string"},
+          "hypothesis": {"type": "string"},
+          "implementation_base": {"type": "string", "enum": ["based_on", "v0_hessian_repair", "scratch"]},
+          "structural_change": {"type": "string"},
+          "evidence": {"type": "string"},
+          "evidence_strength": {"type": "number", "minimum": 0, "maximum": 1},
+          "novelty": {"type": "number", "minimum": 0, "maximum": 1},
+          "uncertainty": {"type": "number", "minimum": 0, "maximum": 1},
+          "expected_cost": {"type": "number", "minimum": 0.25, "maximum": 3},
+          "target_metric": {"type": "string", "enum": ["score", "linear_mse", "attention_mse", "runtime", "combined"]},
+          "falsification": {"type": "string"}
+        }
+      }
+    },
+    "principle_updates": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["principle_id", "action", "statement", "evidence"],
+        "properties": {
+          "principle_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$"
+          },
+          "action": {
+            "type": "string",
+            "enum": ["add", "reinforce", "challenge"]
+          },
+          "statement": {"type": "string"},
+          "evidence": {"type": "string"}
+        }
+      }
+    }
+  }
+}

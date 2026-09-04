@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "principles": [
+    {
+      "id": "immutable_evaluator_boundary",
+      "statement": "算法 Agent 只能修改自己的版本目录；评测器、评分公式、数据清单与调度器在一次运行中必须保持哈希不变。",
+      "rationale": "把代码改进与评分口径隔离，避免把评测污染误判为算法收益。",
+      "status": "core",
+      "support_count": 1,
+      "contradiction_count": 0,
+      "sources": [
+        {
+          "system": "AutoSOTA",
+          "year": 2026,
+          "url": "https://github.com/tsinghua-fib-lab/AutoSOTA"
+        }
+      ]
+    },
+    {
+      "id": "screen_then_confirm",
+      "statement": "内部配置先用固定代表性子集筛选，只让领先配置进入完整 300 例正式评测；正式登记只接受完整评测结果。",
+      "rationale": "多保真门禁减少明显无效候选占用昂贵正式评测的时间，同时保留统一最终口径。",
+      "status": "core",
+      "support_count": 1,
+      "contradiction_count": 0,
+      "sources": [
+        {
+          "system": "OpenEvolve cascade evaluation",
+          "year": 2025,
+          "url": "https://github.com/algorithmicsuperintelligence/openevolve"
+        }
+      ]
+    },
+    {
+      "id": "quality_diversity_pareto",
+      "statement": "保留得分、Linear MSE、Attention MSE 与运行时间上的非支配版本，不把单一最高分当作唯一可复用起点。",
+      "rationale": "Linear 专项、Attention 专项和速度较快的实现可能为不同后续策略提供更合适的基础。",
+      "status": "core",
+      "support_count": 1,
+      "contradiction_count": 0,
+      "sources": [
+        {
+          "system": "GEPA",
+          "year": 2025,
+          "url": "https://arxiv.org/abs/2507.19457"
+        },
+        {
+          "system": "OpenEvolve MAP-Elites",
+          "year": 2025,
+          "url": "https://github.com/algorithmicsuperintelligence/openevolve"
+        }
+      ]
+    },
+    {
+      "id": "evidence_bearing_memory",
+      "statement": "下一轮提示只注入少量相关的成功、失败和边界经验，并携带精确指标与基线，不能只传一个总分。",
+      "rationale": "文字反思能解释稀疏标量奖励，正负经验同时保留可减少重复试错和上下文污染。",
+      "status": "core",
+      "support_count": 1,
+      "contradiction_count": 0,
+      "sources": [
+        {
+          "system": "GEPA",
+          "year": 2025,
+          "url": "https://arxiv.org/abs/2507.19457"
+        },
+        {
+          "system": "EvoScientist",
+          "year": 2026,
+          "url": "https://arxiv.org/abs/2603.08127"
+        }
+      ]
+    },
+    {
+      "id": "adaptive_exploration",
+      "statement": "队列优先级由来源质量、证据强度、新颖性、不确定性、预计成本和算法族历史收益共同计算；连续停滞时提高跨算法族或从零方案的探索权重。",
+      "rationale": "静态按父版本得分派发容易让搜索集中在同一局部方向，且无法把实验成本纳入预算分配。",
+      "status": "core",
+      "support_count": 1,
+      "contradiction_count": 0,
+      "sources": [
+        {
+          "system": "PACEvolve",
+          "year": 2026,
+          "url": "https://arxiv.org/abs/2601.10657"
+        },
+        {
+          "system": "AdaEvolve",
+          "year": 2026,
+          "url": "https://arxiv.org/abs/2602.20133"
+        }
+      ]
+    },
+    {
+      "id": "evidence_gated_principle_evolution",
+      "statement": "报告可以挑战或提出研究原则，但新原则至少需要两个不同算法族的正式结果支持后才能激活。",
+      "rationale": "允许流程从异常和反例中更新方法论，同时避免单个本地实验直接改写全局指导。",
+      "status": "core",
+      "support_count": 1,
+      "contradiction_count": 0,
+      "sources": [
+        {
+          "system": "PiEvo",
+          "year": 2026,
+          "url": "https://arxiv.org/abs/2602.06448"
+        },
+        {
+          "system": "EvE",
+          "year": 2026,
+          "url": "https://github.com/scaling-group/eve"
+        }
+      ]
+    }
+  ]
+}
